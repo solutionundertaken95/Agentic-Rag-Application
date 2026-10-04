@@ -1,4 +1,5 @@
-Enterprise IT Support Agentic RAG Copilot
+#Enterprise IT Support Agentic RAG Copilot
+
 An end-to-end Forward Deployed Engineer (FDE) project that turns a notebook-style Agentic RAG workflow into a deployable internal product using LangGraph, FastAPI, Pinecone, Groq, Tavily, HTML, CSS, and JavaScript.
 
 1. Business Problem
