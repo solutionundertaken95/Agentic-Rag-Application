@@ -2,6 +2,7 @@ import logging
 from typing import Literal
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, START, END
 from app.core.config import get_settings
@@ -17,12 +18,12 @@ _web_search = None
 def llm():
     global _llm
     if _llm is None:
-        if not settings.gemini_api_key_api_key:
-            raise RuntimeError("GEMINI_API_KEY is missing")
-        _llm = ChatGoogleGenerativeAI(
-            model=settings.openai_model,
+        if not settings.groq_api_key:
+            raise RuntimeError("GROQ_API_KEY is missing")
+        _llm = ChatGroq(
+            model=settings.groq_model,
             temperature=0,
-            api_key=settings.gemini_api_key,
+            api_key=settings.groq_api_key,
         )
     return _llm
 

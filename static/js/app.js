@@ -4,7 +4,16 @@ const question = document.getElementById('question');
 const trace = document.getElementById('trace');
 const sourceUsed = document.getElementById('sourceUsed');
 
-function escapeHtml(s=''){return s.replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+function toStr(v){
+  if (typeof v === 'string') return v;
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+function escapeHtml(s=''){
+  s = toStr(s);
+  return s.replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+}
 function formatText(s=''){return escapeHtml(s).replace(/\n/g,'<br>');}
 function addMessage(role, text, source='', citations=[]){
   const wrap=document.createElement('div'); wrap.className=`message ${role}`;
@@ -12,14 +21,16 @@ function addMessage(role, text, source='', citations=[]){
   wrap.innerHTML=`<div class="avatar">AI</div><div class="bubble">${formatText(text)}${source?`<div class="answer-source">Source: ${escapeHtml(source)}</div>`:''}${citeHtml}</div>`;
   chat.appendChild(wrap); chat.scrollTop=chat.scrollHeight;
 }
-function renderTrace(items=[]){trace.innerHTML=items.length?items.map(x=>`<div class="trace-item">${escapeHtml(x)}</div>`).join(''):'<div class="empty">No trace.</div>';}
+function renderTrace(items=[]){
+  trace.innerHTML=items.length?items.map(x=>`<div class="trace-item">${escapeHtml(x)}</div>`).join(''):'<div class="empty">No trace.</div>';
+}
 async function askAgent(q){
   addMessage('user',q); question.value=''; renderTrace(['Running LangGraph workflow...']); sourceUsed.textContent='Running';
   const btn=form.querySelector('button'); btn.disabled=true;
   try{
     const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})});
     const data=await res.json(); if(!res.ok) throw new Error(data.detail||'Request failed');
-    addMessage('assistant',data.answer,data.source_used,data.citations||[]); renderTrace(data.trace||[]); sourceUsed.textContent=data.source_used;
+    addMessage('assistant',data.answer,data.source_used,data.citations||[]); renderTrace(data.trace||[]); sourceUsed.textContent=toStr(data.source_used);
   }catch(e){addMessage('assistant',`Error: ${e.message}`); renderTrace(['Request failed']); sourceUsed.textContent='Error';}
   finally{btn.disabled=false;}
 }

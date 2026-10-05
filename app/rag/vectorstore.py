@@ -42,8 +42,8 @@ def get_embedding_dimension(model_name: str | None = None) -> int:
 def get_embeddings():
     global _embeddings
     if _embeddings is None:
-        # if not settings.openai_api_key:
-        #     raise RuntimeError("OPENAI_API_KEY is missing")
+        if not settings.groq_api_key:
+            raise RuntimeError("GROQ_API_KEY is missing")
         _embeddings = HuggingFaceEmbeddings(
             model=settings.embedding_model
         )

@@ -8,12 +8,14 @@ class Settings(BaseSettings):
     app_name: str = "Enterprise IT Support Agentic RAG Copilot"
     app_env: str = "development"
     gemini_api_key: str = ""
+    groq_api_key:str = ""
     tavily_api_key: str = ""
     pinecone_api_key: str = ""
     pinecone_index_name: str = "fde-it-support-rag"
     pinecone_namespace: str = "company-it-kb"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     gemini_model: str = "gemini-3.7-flash"
+    groq_model: str = "openai/gpt-oss-120b"
     top_k: int = 4
     max_retries: int = 1
     admin_api_key: str = "change-me"

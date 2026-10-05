@@ -1,2 +1,51 @@
-.env 
+# Environment variables
+.env
+
+# Virtual environments
 venv/
+.venv/
+env/
+
+# Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+
+# Build/distribution artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Coverage/test reports
+.coverage
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+
+# # Project-specific runtime data
+# uploads/
+# data/audit.db
+# data/sample_kb/
