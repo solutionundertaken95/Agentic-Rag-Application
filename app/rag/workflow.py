@@ -47,10 +47,17 @@ def add_trace(state: AgentState, message: str):
 def route_question(state: AgentState):
     router = llm().with_structured_output(RouteDecision, method="json_mode")
     decision = router.invoke(f"""
-You route messages for an enterprise IT support assistant.
-Use kb for questions about company IT policies, VPN, password reset, MFA, laptop setup,
-software access, security, email, devices, troubleshooting, or technology support.
-Use direct only for greetings, thanks, or casual chat that needs no company knowledge.
+You route messages for an enterprise IT support assistant that has access to a private
+company knowledge base containing uploaded documents on any topic (policies, procedures,
+product info, HR, IT, or anything else the company has indexed).
+
+Use "kb" for ANY question that could plausibly be answered using company documents or
+knowledge — this includes IT topics, policies, procedures, product/service questions,
+or anything specific/informational. When in doubt, choose "kb".
+
+Use "direct" ONLY for greetings, thanks, small talk, or questions with no possible
+connection to company knowledge (e.g. "hello", "thank you", "how are you").
+
 Question: {state['question']}
 Return valid JSON like {{"route":"kb"}}.
 """)
