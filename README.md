@@ -1,206 +1,291 @@
 # 🤖 Enterprise IT Support Agentic RAG Copilot
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100.0%2B-009688.svg)](https://fastapi.tiangolo.com/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-Agentic%20Workflow-orange.svg)](https://www.langchain.com/langgraph)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Agent%20Orchestration-1C3C3C.svg?logo=langchain&logoColor=white)](https://www.langchain.com/langgraph)
 [![Pinecone](https://img.shields.io/badge/Pinecone-Vector%20DB-000000.svg)](https://www.pinecone.io/)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
+[![Groq](https://img.shields.io/badge/Groq-LLM%20Inference-F55036.svg)](https://groq.com/)
+[![Tavily](https://img.shields.io/badge/Tavily-Web%20Search-4A90E2.svg)](https://tavily.com/)
+[![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
 
-An production-grade **Forward Deployed Engineering (FDE)** solution that transforms a static notebook RAG workflow into an interactive, self-correcting IT Support Copilot for enterprise environments.
+An intelligent, agentic retrieval-augmented generation (RAG) application built in Python for enterprise knowledge assistance. The project combines FastAPI, LangGraph, Pinecone, and LLM-based reasoning to route user questions, retrieve relevant context from a private knowledge base, and fall back to web search when needed.
 
----
+This repository is designed as a proof-of-concept for building a grounded, explainable AI assistant that can answer questions from both private documents and external web sources while exposing a clear reasoning trace.
 
-## 📌 Problem Statement & Overview
+## Contents
 
-Enterprise IT helpdesks face high volumes of repetitive support tickets regarding VPN access, password resets, MFA policies, and software configurations. Traditional static RAG implementations often fail when:
-- Internal documentation is incomplete, missing, or outdated.
-- Generic vector searches return irrelevant chunk context.
-- Answers require real-time or public web information (e.g., live vendor outage reports).
-
-### 💡 Solution
-
-The **Agentic RAG Copilot** solves this by shifting from linear retrieval (*Retrieve $\rightarrow$ Generate*) to an **autonomous graph execution loop**:
-1. **Prioritizes Private Knowledge:** Searches internal company policy documentation first via semantic vector search.
-2. **Evaluates Evidence Quality:** Grades retrieved context for relevance before generating an answer.
-3. **Dynamic Web Fallback:** Triggers real-time web search (**Tavily**) only when private knowledge is insufficient or missing.
-4. **Self-Correction & Query Rewriting:** Automatically reformulates ambiguous or poor user queries with loop guardrails.
-5. **Traceability & Auditability:** Exposes full reasoning paths and logs decision trees for administrator oversight.
+- [What We Built](#what-we-built)
+- [System Architecture](#system-architecture)
+- [Technical Challenges and Solutions](#technical-challenges-and-solutions)
+- [Results and Impact](#results-and-impact)
+- [Getting Started](#getting-started)
+- [Future Scope](#future-scope)
 
 ---
 
-## 🏗️ System Architecture & Workflow
+## What We Built
 
-                    ┌──────────────────┐
-                    │   User / Admin   │
-                    └────────┬─────────┘
-                             │
-                     POST /api/chat
-                             ▼
-                    ┌──────────────────┐
-                    │ FastAPI Backend  │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │    LangGraph     │
-                    │ Agent Control    │
-                    └────────┬─────────┘
-                             │
-        ┌────────────────────┴────────────────────┐
-        ▼                                         ▼
-┌─────────────────┐                       ┌─────────────────┐
-│   Private KB    │                       │   Tavily Web    │
-│ (Pinecone Vector│                       │     Search      │
-│      DB)        │                       └────────┬────────┘
-└────────┬────────┘                                │
-└────────────────────┬────────────────────┘
-▼
-┌──────────────────┐
-│    Groq LLM      │
-│ Grounded Answer  │
-└──────────────────┘
+This project implements a full-stack agentic RAG workflow with:
 
+- A FastAPI backend and web UI
+- LangGraph-powered agent orchestration
+- Retrieval from a Pinecone vector database
+- LLM-based routing, evidence grading, and answer generation
+- Web fallback using Tavily
+- Document ingestion for user-uploaded knowledge files
+- Audit logging for traceability
 
-### 🧠 Agentic Decision Graph
+The application is designed around a real enterprise support use case: answering user queries using company knowledge while falling back to external search if the internal knowledge base is weak or missing.
 
-- **[1] Intent Router:** Determines whether the input is a simple greeting vs. a complex IT support query.
-- **[2] Private Retrieval:** Queries internal vector indices (**Pinecone**) using semantic embeddings.
-- **[3] Evidence Evaluator:** Evaluates private document relevance.
-  - If **GOOD**: Generates response directly grounded in private documents.
-  - If **WEAK**: Passes control to the web retrieval agent.
-- **[4] Web Search Fallback:** Executes external web searches via **Tavily**.
-- **[5] Web Evidence Evaluator:** Evaluates web search results.
-  - If **GOOD**: Generates a response with an explicit external-source citation/warning.
-  - If **WEAK**: Triggers the Query Rewriter.
-- **[6] Self-Correction Loop:** Rewrites the query to improve context matching and retries retrieval up to a maximum iteration limit.
+### Current repository composition
+
+The repository is primarily Python-based:
+
+- Python: 73.9%
+- HTML: 12.1%
+- JavaScript: 12.1%
+- Dockerfile: 1.9%
+
+The implementation is organized into application layers:
+
+- `app/api` — API routes for health checks, chat, and ingestion
+- `app/core` — configuration, settings, and logging
+- `app/rag` — vector retrieval, graph workflow, and orchestration logic
+- `app/services` — ingestion, audit, and supporting services
+- `templates/` and `static/` — frontend UI assets
+- `data/` and `uploads/` — sample knowledge base and uploaded user content
 
 ---
 
-## 💻 Tech Stack
+## System Architecture
 
-| Layer | Technology | Function |
-| :--- | :--- | :--- |
-| **Agentic Framework** | **LangGraph** | Stateful execution loops, conditional branching, and agent state management |
-| **LLM Engine** | **Groq** (`openai/gpt-oss-20b`) / **OpenAI** (`gpt-4o-mini`) | Fast inference for intent routing, evidence grading, query rewriting, and answer generation |
-| **Embeddings** | **HuggingFace** (`all-MiniLM-L6-v2`) / **OpenAI** | 384-dimensional dense semantic vectors |
-| **Vector DB** | **Pinecone** | Cloud-native vector store with metadata filtering and namespace isolation |
-| **Web Search Engine** | **Tavily API** | Agentic web search engine optimized for LLM context retrieval |
-| **Backend API** | **FastAPI** & **Uvicorn** | Asynchronous REST endpoints (`POST /api/chat`, `POST /api/ingest`, `GET /api/health`) |
-| **Frontend UI** | **HTML5 / CSS3 / Vanilla JS** | Web interface displaying real-time reasoning traces and interactive document uploads |
-| **Audit & Storage** | **SQLite** | Audit logging of agent traces, query routes, and system logs |
-| **DevOps & Containerization** | **Docker** & **Python 3.10+** | Reproducible builds and microservice deployment |
+```mermaid
+flowchart TD
+    User[User] --> Web[Frontend UI]
+    Web --> API[FastAPI API]
+    API --> Graph[LangGraph Agent Workflow]
+    Graph --> Router[Question Router]
+
+    Router --> KB[Private Knowledge Base<br/>Pinecone]
+    Router --> WebSearch[Tavily Web Search]
+
+    KB --> Retriever[Retriever + Embedding Model]
+    Retriever --> GradeKB[Evidence Grader]
+    WebSearch --> GradeWeb[Web Evidence Grader]
+
+    GradeKB --> KBAnswer[Generate from Private KB]
+    GradeWeb --> WebAnswer[Generate from Web]
+    Router --> Direct[Direct Response]
+
+    KBAnswer --> Response[Final Answer + Citations + Trace]
+    WebAnswer --> Response
+    Direct --> Response
+```
+
+### Core workflow
+
+The application follows a retrieval and reasoning loop:
+
+1. The user submits a question through the API or UI.
+2. The router decides whether the question is:
+   - a knowledge-base question
+   - a direct conversational question
+   - or a case requiring fallback search
+3. Relevant documents are retrieved from the Pinecone vector index.
+4. The model grades the retrieved evidence for quality.
+5. If the evidence is strong, the assistant answers from the private KB.
+6. If the evidence is weak, the app triggers a Tavily search.
+7. The answer is generated using the best available evidence.
+8. The system returns:
+   - answer text
+   - source used
+   - citations
+   - rewritten query (if applicable)
+   - trace of the reasoning path
+
+### API surface
+
+The repository exposes the following core endpoints:
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/health` | GET | Service health check |
+| `/api/chat` | POST | Submit a question and receive a grounded answer |
+| `/api/ingest` | POST | Upload and ingest a document into the KB |
+
+The app also includes a UI served by FastAPI and Jinja2 templates.
 
 ---
 
-## 📂 Repository Structure
+## Technical Challenges and Solutions
 
-```text
-.
-├── app/
-│   ├── api/
-│   │   └── routes.py              # API endpoints (Chat, Ingestion, Health)
-│   ├── core/
-│   │   ├── config.py              # App config & environment variables
-│   │   └── logging.py             # System logging configuration
-│   ├── rag/
-│   │   ├── state.py               # LangGraph state schema & node definitions
-│   │   ├── vectorstore.py         # Pinecone index management & embeddings
-│   │   └── workflow.py            # Complete Agentic RAG graph definition
-│   ├── services/
-│   │   ├── audit.py               # SQLite execution trace logger
-│   │   └── ingestion.py           # Document parsing (.pdf, .docx, .md, .txt) & chunking
-│   └── main.py                    # FastAPI application initialization
-├── data/
-│   └── sample_kb/                 # Default knowledge base policies
-├── static/                        # Frontend UI static assets (CSS, JS)
-├── templates/                     # HTML templates
-├── tests/                         # Unit and integration test suites
-├── Dockerfile                     # Docker container configuration
-├── ingest_sample_kb.py            # Local KB initialization script
-├── requirements.txt               # Python package dependencies
-└── run.py 
+### 1. Routing ambiguous user queries
 
-                        # Application entrypoint
-⚡ Quick Start & Setup
+A major challenge in agentic RAG is deciding whether a request should be answered from a private knowledge base, a direct response, or a web search fallback.
 
-Prerequisites
-Python 3.10+ installed
+**Solution:**  
+The project uses a LangGraph workflow with a router node that classifies the query. This keeps the system grounded and prevents unnecessary web searches for simple conversational inputs.
 
-Docker (Optional, for containerized run)
+### 2. Low-quality or incomplete retrieval
 
-API Keys for Groq, OpenAI, Pinecone, and Tavily
+Vector retrieval can surface weak context, especially when the query is vague or under-specified.
 
-1️⃣ Installation
+**Solution:**  
+The app uses evidence grading and query rewriting. If the initial retrieval is weak, the system attempts to rewrite the query and re-run retrieval. This creates a self-correction loop rather than a single-pass answer.
 
-Clone the repository and set up a virtual environment:
+### 3. Mixing private and public knowledge safely
 
-Bash
-git clone [https://github.com/solutionundertaken95/Agentic-Rag-Application.git](https://github.com/solutionundertaken95/Agentic-Rag-Application.git)
+For enterprise use, answers must be grounded in internal documentation whenever possible. Public web data should be treated as secondary and clearly labeled.
+
+**Solution:**  
+The workflow prioritizes the private knowledge base, then evaluates whether it is strong enough to answer. If not, it uses Tavily search and clearly labels the answer as web-based or externally sourced.
+
+### 4. Maintaining traceability and explainability
+
+A black-box chatbot is hard to trust in enterprise contexts.
+
+**Solution:**  
+The application logs the trace of each decision, including:
+- routing path
+- retrieval counts
+- evidence grade
+- query rewrite steps
+- source used for final answer
+
+This makes the system easier to audit and debug.
+
+### 5. Securing ingestion and document indexing
+
+Allowing users to upload files to a production knowledge base introduces risk unless controlled.
+
+**Solution:**  
+The project includes an admin-only ingestion flow using an `X-Admin-Key` header, which protects the document indexing endpoint.
+
+---
+
+## Results and Impact
+
+This repository demonstrates a working prototype for agentic knowledge retrieval with the following implemented capabilities:
+
+- FastAPI-based application server
+- LangGraph orchestration flow
+- Pinecone-based vector retrieval
+- Groq-based LLM routing and generation
+- Tavily web fallback
+- Document upload and indexing
+- Trace output for reasoning steps
+- Docker-based deployment support
+
+### Quantifiable project facts
+
+From the repository structure and setup:
+
+- 1 FastAPI application entrypoint
+- 4 main application layers: `api`, `core`, `rag`, `services`
+- 1 Dockerfile for containerized deployment
+- 1 main ingestion script: `ingest_sample_kb.py`
+- 1 primary run entrypoint: `run.py`
+- 1 vector database integration via Pinecone
+- 1 external search integration via Tavily
+- 1 admin-protected ingestion route for knowledge updates
+
+This is best characterized as a functional prototype demonstrating the viability of agentic RAG orchestration rather than a production-scale enterprise deployment. No large-scale benchmark or throughput data is included in the repository.
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.10+
+- Docker (optional)
+- API keys for:
+  - Groq
+  - Pinecone
+  - Tavily
+  - OpenAI (optional, depending on the configured model path)
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/solutionundertaken95/Agentic-Rag-Application.git
 cd Agentic-Rag-Application
+```
 
-# Create and activate virtual environment
+### 2. Create a virtual environment
+
+```bash
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
+```
 
+On Windows:
 
-# Install dependencies
+```bash
+venv\Scripts\activate
+```
 
+### 3. Install dependencies
+
+```bash
 pip install -r requirements.txt
+```
 
-2️⃣ Environment Configuration
+### 4. Configure environment variables
 
-Create a .env file in the project root directory:
+Create a `.env` file in the project root:
 
-Code snippet
-# LLM Configuration
-GROQ_API_KEY=your_groq_api_key
-OPENAI_API_KEY=your_openai_api_key
-GROQ_MODEL=openai/gpt-oss-20b
-OPENAI_MODEL=gpt-4o-mini
-EMBEDDING_MODEL=text-embedding-3-small
-
-# Vector Database & Search
-PINECONE_API_KEY=your_pinecone_api_key
+```env
+GROQ_API_KEY=your_groq_key
+TAVILY_API_KEY=your_tavily_key
+PINECONE_API_KEY=your_pinecone_key
 PINECONE_INDEX_NAME=fde-it-support-rag
 PINECONE_NAMESPACE=company-it-kb
-TAVILY_API_KEY=your_tavily_api_key
-
-# Security & Admin
-ADMIN_API_KEY=your_secure_admin_key
+ADMIN_API_KEY=change-me
 APP_ENV=development
+```
 
+### 5. Ingest sample data
 
-3️⃣ Ingest Initial Knowledge Base
-Populate the Pinecone index with sample IT handbook and runbook documents:
-
-Bash
+```bash
 python ingest_sample_kb.py
+```
 
+### 6. Run the app
 
-4️⃣ Run the Application
-Start the FastAPI application server:
-
-Bash
+```bash
 python run.py
-Web UI: Access at http://127.0.0.1:8000
+```
 
-Interactive API Docs (Swagger): Access at http://127.0.0.1:8000/docs
+Then open:
 
-🐳 Docker Deployment
-To build and run the application in a Docker container:
+- Frontend: `http://127.0.0.1:8000`
+- API docs: `http://127.0.0.1:8000/docs`
 
-Bash
-# Build Docker image
-docker build -t agentic-rag-copilot .
+### 7. Run the app in Docker
 
-# Run container
-docker run -d -p 8000:8000 --env-file .env --name it-copilot agentic-rag-copilot
-🔒 Security & Admin Ingestion
-The copilot features an authenticated endpoint (POST /api/ingest) for uploading new policy documents dynamically without restarting the server:
+```bash
+docker build -t agentic-rag-app .
+docker run -p 8000:8000 --env-file .env agentic-rag-app
+```
 
-Supported File Formats: .pdf, .docx, .md, .txt
+---
 
-Authentication: Protected by the X-Admin-Key header matching ADMIN_API_KEY in your .env.
+## Future Scope
 
-📄 License
-Distributed under the MIT License. See LICENSE for more information.
+- Add multi-document metadata filtering for more precise retrieval
+- Improve agent memory and session continuity
+- Add support for more enterprise document types
+- Add a persistent database for audit logs and user activity
+- Add rate limiting and auth for production deployment
+- Introduce model fallback strategies for LLM resilience
+- Add evaluate/test pipelines for answer quality and retrieval precision
+- Expand to multi-agent specialization (retrieval agent, reasoning agent, validation agent)
+- Add dashboards for monitoring cost, latency, and answer quality
+- Generalize from IT support to broader enterprise knowledge assistants
+
+---
+
+## License
+
+No license is currently specified in this repository. If this project is intended for public reuse or distribution, adding an explicit license is recommended.
