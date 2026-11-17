@@ -6,6 +6,11 @@ from langchain_core.documents import Document
 class RouteDecision(BaseModel):
     route: Literal["kb", "direct"] = Field(description="kb for IT/support questions; direct for greetings/simple chat")
 
+class InternalTopicDecision(BaseModel):
+    """Whether a question is about internal company matters (policy/payroll/procedures)
+    whose answer would plausibly exist in the private company KB."""
+    internal: bool = Field(description="true if the question is about internal company matters")
+
 class EvidenceGrade(BaseModel):
     grade: Literal["good", "weak"] = Field(description="Whether evidence is sufficient to answer")
 
@@ -21,3 +26,9 @@ class AgentState(TypedDict):
     retry_count: int
     trace: List[str]
     citations: List[dict]
+    # Authorization-aware RAG: user principal carried through the graph
+    username: str
+    allowed_departments: List[str]
+    retrieved_sources: List[str]
+    kb_empty_in_scope: bool
+    is_internal_topic: bool
