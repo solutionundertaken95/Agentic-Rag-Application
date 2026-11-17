@@ -19,6 +19,8 @@
         <h3>Logged-in User</h3>
         <div id="userBadge" class="muted">Not signed in</div>
         <button id="openAudit" class="secondary-btn hidden">Audit Trail</button>
+        <button id="openEscalations" class="secondary-btn hidden">Escalations</button>
+        <button id="openMyTickets" class="secondary-btn">My Tickets</button>
         <button id="logoutBtn" class="secondary-btn hidden">Sign out</button>
       </div>
 
@@ -86,6 +88,20 @@
       <input id="loginPass" type="password" placeholder="Password" />
       <button id="loginBtn" class="send-btn full">Sign in</button>
       <div id="loginStatus" class="upload-status"></div>
+    </div>
+  </div>
+
+  <div id="escalationModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head"><h2>Human Review — Escalations</h2><button id="closeEscalations">×</button></div>
+      <div id="escalationList" class="upload-status">Loading…</div>
+    </div>
+  </div>
+
+  <div id="myTicketsModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head"><h2>My Escalated Questions</h2><button id="closeMyTickets">×</button></div>
+      <div id="myTicketsList" class="upload-status">Loading…</div>
     </div>
   </div>
 

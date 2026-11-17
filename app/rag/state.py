@@ -6,6 +6,10 @@ from langchain_core.documents import Document
 class RouteDecision(BaseModel):
     route: Literal["kb", "direct"] = Field(description="kb for IT/support questions; direct for greetings/simple chat")
 
+class ConfidenceScore(BaseModel):
+    """LLM-as-judge confidence that a draft answer is correct and grounded."""
+    confidence: int = Field(description="0-100 confidence that the answer is accurate and fully supported by evidence", ge=0, le=100)
+
 class InternalTopicDecision(BaseModel):
     """Whether a question is about internal company matters (policy/payroll/procedures)
     whose answer would plausibly exist in the private company KB."""
@@ -32,3 +36,6 @@ class AgentState(TypedDict):
     retrieved_sources: List[str]
     kb_empty_in_scope: bool
     is_internal_topic: bool
+    # Human-in-the-loop escalation
+    confidence: int
+    escalation_ref: str

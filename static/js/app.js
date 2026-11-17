@@ -65,6 +65,8 @@ function renderUser(){
     badge.innerHTML = `<strong>${escapeHtml(me.username)}</strong><br>Roles: ${me.roles.map(escapeHtml).join(', ')}<br>Doc access: ${me.allowed_departments.map(escapeHtml).join(', ')}`;
     logout.classList.remove('hidden');
     if(me.is_admin) auditBtn.classList.remove('hidden');
+    // department owners can review their departments' escalations
+    if(me.is_admin || me.allowed_departments.some(d => d !== 'GENERAL')) document.getElementById('openEscalations').classList.remove('hidden');
   } else {
     badge.textContent = 'Not signed in';
     logout.classList.add('hidden');
@@ -127,6 +129,9 @@ askAgent = async function(q){
     if(data.access_scope){
       renderTrace([...(data.trace||[]), `Access scope: ${data.access_scope.username} [${data.access_scope.allowed_departments.join(',')}] → saw docs from: ${data.access_scope.document_departments_seen.join(', ') || 'none'}`]);
     }
+    if(data.confidence !== null && data.confidence !== undefined){
+      sourceUsed.textContent = `${toStr(data.source_used)} (confidence ${data.confidence}/100)`;
+    }
   }catch(e){ addMessage('assistant', `Error: ${e.message}`); renderTrace(['Request failed']); sourceUsed.textContent = 'Error'; }
   finally{ btn.disabled = false; }
 };
@@ -147,3 +152,71 @@ document.getElementById('uploadBtn').onclick = async () => {
 };
 
 tryRestoreSession();
+
+// ---------------- Human-in-the-Loop Escalations ----------------
+const escModal = document.getElementById('escalationModal');
+const myTicketsModal = document.getElementById('myTicketsModal');
+
+// Show confidence in trace panel and surface escalation refs
+const _renderTraceOrig = renderTrace;
+function _askAgentDone(data){
+  if(data.confidence !== null && data.confidence !== undefined){
+    sourceUsed.textContent = `${toStr(data.source_used)} (confidence ${data.confidence}/100)`;
+  }
+}
+
+document.getElementById('openEscalations').onclick = async () => {
+  escModal.classList.remove('hidden');
+  const box = document.getElementById('escalationList');
+  box.textContent = 'Loading…';
+  try{
+    const r = await fetch('/api/escalations', {headers: authHeaders()});
+    const d = await r.json(); if(!r.ok) throw new Error(d.detail||'Failed');
+    if(!d.tickets.length){ box.innerHTML = '<p>No escalations pending. 🎉</p>'; return; }
+    box.innerHTML = d.tickets.map(t => `
+      <div class="trace-item" style="text-align:left">
+        <strong>${escapeHtml(t.ticket_ref)}</strong> [${escapeHtml(t.department)}] conf ${t.confidence}/100 — ${escapeHtml(t.status)}<br>
+        <em>Q:</em> ${escapeHtml(t.question)}<br>
+        <em>Draft:</em> ${escapeHtml((t.draft_answer||'').slice(0,300))}<br>
+        <em>Evidence:</em> ${(t.evidence||[]).map(e=>`<li>${escapeHtml(e.source.split('/').pop())} [${escapeHtml(e.department)}]: ${escapeHtml((e.excerpt||'').slice(0,150))}</li>`).join('')}
+        ${t.status==='pending' ? `
+          <textarea id="cmt-${escapeHtml(t.ticket_ref)}" rows="2" placeholder="Reviewer comment" style="width:100%"></textarea>
+          <button onclick="reviewTicket('${escapeHtml(t.ticket_ref)}','approved')">Approve</button>
+          <button onclick="reviewTicket('${escapeHtml(t.ticket_ref)}','rejected')">Reject</button>` :
+          `<em>${escapeHtml(t.resolution||'')}</em> by ${escapeHtml(t.reviewer||'')}: ${escapeHtml(t.reviewer_comment||'')}`}
+      </div>`).join('');
+  }catch(e){ box.textContent = 'Error: ' + e.message; }
+};
+document.getElementById('closeEscalations').onclick = () => escModal.classList.add('hidden');
+
+window.reviewTicket = async function(ref, resolution){
+  const comment = document.getElementById('cmt-'+ref)?.value || '';
+  try{
+    const r = await fetch(`/api/escalations/${ref}/review`, {method:'POST', headers: authHeaders({'Content-Type':'application/json'}), body: JSON.stringify({resolution, comment})});
+    const d = await r.json(); if(!r.ok) throw new Error(d.detail||'Failed');
+    document.getElementById('openEscalations').click(); // refresh list
+  }catch(e){ alert('Review failed: ' + e.message); }
+};
+
+document.getElementById('openMyTickets').onclick = async () => {
+  if(!token){ loginModal.classList.remove('hidden'); return; }
+  myTicketsModal.classList.remove('hidden');
+  const box = document.getElementById('myTicketsList');
+  box.textContent = 'Loading…';
+  try{
+    const r = await fetch('/api/escalations/mine', {headers: authHeaders()});
+    const d = await r.json(); if(!r.ok) throw new Error(d.detail||'Failed');
+    box.innerHTML = d.tickets.length ? d.tickets.map(t => `
+      <div class="trace-item" style="text-align:left">
+        <strong>${escapeHtml(t.ticket_ref)}</strong> — ${escapeHtml(t.status)}${t.resolution ? ' ('+escapeHtml(t.resolution)+' by '+escapeHtml(t.reviewer||'')+')' : ''}<br>
+        ${escapeHtml(t.question)}
+      </div>`).join('') : '<p>No escalated questions yet.</p>';
+  }catch(e){ box.textContent = 'Error: ' + e.message; }
+};
+document.getElementById('closeMyTickets').onclick = () => myTicketsModal.classList.add('hidden');
+
+// Patch askAgent once more to include confidence display
+const _prevAsk = askAgent;
+askAgent = async function(q){
+  await _prevAsk(q);
+};

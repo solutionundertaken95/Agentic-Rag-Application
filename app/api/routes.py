@@ -72,6 +72,8 @@ def chat(payload: ChatRequest, user: User = Depends(get_current_user)):
                 "allowed_departments": list(user.allowed_departments),
                 "document_departments_seen": doc_departments,
             },
+            "confidence": result.get("confidence"),
+            "escalation_ref": result.get("escalation_ref") or None,
         }
     except HTTPException:
         raise
