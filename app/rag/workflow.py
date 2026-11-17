@@ -4,7 +4,7 @@ from langchain_groq import ChatGroq
 from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, START, END
 from app.core.config import get_settings
-from app.rag.state import AgentState, RouteDecision, EvidenceGrade
+from app.rag.state import AgentState, RouteDecision, EvidenceGrade, InternalTopicDecision
 from app.rag.vectorstore import get_retriever
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,9 @@ def retrieve_kb(state: AgentState):
     accessed = sorted({d.metadata.get("source", "unknown") for d in docs})
     return {
         "kb_docs": docs,
+        # Empty retrieval inside the user's scope is the trigger for the
+        # authorization-aware fallback: the info may exist but be restricted.
+        "kb_empty_in_scope": len(docs) == 0,
         "trace": add_trace(
             state,
             f"Private KB retrieval (role-filter: {scope}) → {len(docs)} chunks "
@@ -95,8 +98,65 @@ Otherwise return weak. JSON: {{"grade":"good"}} or {{"grade":"weak"}}.
 """)
     return {"kb_grade": grade.grade, "trace": add_trace(state, f"KB evidence grade → {grade.grade.upper()}")}
 
-def after_kb(state: AgentState) -> Literal["generate_from_kb", "search_web"]:
-    return "generate_from_kb" if state["kb_grade"] == "good" else "search_web"
+def after_kb(state: AgentState) -> Literal["generate_from_kb", "check_access_scope", "search_web"]:
+    """Authorization-aware fallback routing.
+
+    - good evidence → answer from KB
+    - weak evidence → classify the question first: if it is about internal company
+      matters, the real answer may sit in restricted documents the user cannot see
+      (whether retrieval returned nothing, or irrelevant in-scope chunks). Web fallback
+      is only allowed for genuinely external topics.
+    """
+    if state["kb_grade"] == "good":
+        return "generate_from_kb"
+    return "check_access_scope"
+
+
+def check_access_scope(state: AgentState):
+    """Classify whether the question is about internal company matters that would
+    normally live in the private KB (policy, benefits, payroll, procedures, runbooks).
+    If so, web search must NOT answer it — the user may simply lack access to the
+    document that contains the answer."""
+    classifier = llm().with_structured_output(InternalTopicDecision, method="json_mode")
+    decision = classifier.invoke(f"""
+You decide whether a question is about INTERNAL company matters for an enterprise
+knowledge assistant. Internal matters include: company policies (leave, benefits,
+expenses, reimbursement), payroll/compensation, internal procedures and runbooks,
+incident handling, HR/Finance/IT/Security processes, internal systems and vendors,
+or any question whose answer would plausibly exist in a private company document.
+
+External matters include: general tech knowledge, product/vendor documentation,
+public news, outages, how-tos unrelated to this company's internals.
+
+Question: {state['question']}
+Return valid JSON like {{"internal": true}}.
+""")
+    verdict = "INTERNAL" if decision.internal else "EXTERNAL"
+    return {
+        "is_internal_topic": decision.internal,
+        "trace": add_trace(state, f"Access-scope check → topic classified {verdict}"),
+    }
+
+
+def after_access_scope(state: AgentState) -> Literal["denied_access", "search_web"]:
+    return "denied_access" if state["is_internal_topic"] else "search_web"
+
+
+def denied_access(state: AgentState):
+    """The user's question likely has an answer in restricted company documents they
+    are not authorized to see. Do not leak existence of such documents, and do NOT
+    answer internal-policy questions from the public web — redirect instead."""
+    return {
+        "answer": (
+            "I couldn't find this in the knowledge bases you're authorized to access. "
+            "This may be covered by internal company documentation outside your role's "
+            "access scope — please contact your department owner (IT, HR, Finance, or "
+            "Security) or raise a ticket for the relevant team."
+        ),
+        "source_used": "denied_access",
+        "citations": [],
+        "trace": add_trace(state, "Stopped → no authorized internal evidence; web fallback withheld"),
+    }
 
 def search_web(state: AgentState):
     result = web_search_tool().invoke({"query": state["current_query"]})
@@ -188,6 +248,8 @@ def build_graph():
         "route_question": route_question,
         "retrieve_kb": retrieve_kb,
         "grade_kb": grade_kb,
+        "check_access_scope": check_access_scope,
+        "denied_access": denied_access,
         "search_web": search_web,
         "grade_web": grade_web,
         "rewrite_query": rewrite_query,
@@ -204,7 +266,11 @@ def build_graph():
     })
     graph.add_edge("retrieve_kb", "grade_kb")
     graph.add_conditional_edges("grade_kb", after_kb, {
-        "generate_from_kb": "generate_from_kb", "search_web": "search_web"
+        "generate_from_kb": "generate_from_kb", "check_access_scope": "check_access_scope",
+        "search_web": "search_web"
+    })
+    graph.add_conditional_edges("check_access_scope", after_access_scope, {
+        "denied_access": "denied_access", "search_web": "search_web"
     })
     graph.add_edge("search_web", "grade_web")
     graph.add_conditional_edges("grade_web", after_web, {
@@ -213,6 +279,7 @@ def build_graph():
     graph.add_edge("rewrite_query", "retrieve_kb")
     graph.add_edge("generate_from_kb", END)
     graph.add_edge("generate_from_web", END)
+    graph.add_edge("denied_access", END)
     graph.add_edge("direct_answer", END)
     graph.add_edge("insufficient", END)
     return graph.compile()
@@ -235,5 +302,7 @@ def ask(question: str, username: str = "anonymous", allowed_departments: list[st
         "username": username,
         "allowed_departments": list(allowed_departments),
         "retrieved_sources": [],
+        "kb_empty_in_scope": False,
+        "is_internal_topic": False,
     }
     return agent_graph.invoke(initial)

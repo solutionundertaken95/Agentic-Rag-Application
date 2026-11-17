@@ -54,6 +54,12 @@ def chat(payload: ChatRequest, user: User = Depends(get_current_user)):
                 accessed.append({"document": key[0], "department": key[1]})
         audit.write_document_access(user.username, user.roles, payload.question, accessed)
 
+        # Authorization-aware fallback: log withheld web fallbacks as explicit denials
+        if result.get("source_used") == "denied_access":
+            audit.write_document_access(user.username, user.roles, payload.question,
+                                        [{"document": "(restricted - not retrieved)",
+                                          "department": "DENIED"}])
+
         return {
             "answer": result["answer"],
             "source_used": result["source_used"],
