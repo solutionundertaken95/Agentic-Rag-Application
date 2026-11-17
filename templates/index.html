@@ -16,6 +16,13 @@
       </div>
 
       <div class="workflow-card">
+        <h3>Logged-in User</h3>
+        <div id="userBadge" class="muted">Not signed in</div>
+        <button id="openAudit" class="secondary-btn hidden">Audit Trail</button>
+        <button id="logoutBtn" class="secondary-btn hidden">Sign out</button>
+      </div>
+
+      <div class="workflow-card">
         <h3>LangGraph Workflow</h3>
         <div class="flow-step">1. Route question</div>
         <div class="flow-step">2. Retrieve private KB</div>
@@ -71,12 +78,37 @@
     </aside>
   </div>
 
+  <div id="loginModal" class="modal">
+    <div class="modal-card">
+      <div class="modal-head"><h2>Sign in</h2></div>
+      <p class="muted">Authorization-Aware RAG — retrieval is filtered by your role.</p>
+      <input id="loginUser" type="text" placeholder="Username (e.g. it.user)" />
+      <input id="loginPass" type="password" placeholder="Password" />
+      <button id="loginBtn" class="send-btn full">Sign in</button>
+      <div id="loginStatus" class="upload-status"></div>
+    </div>
+  </div>
+
+  <div id="auditModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head"><h2>Security Audit Trail</h2><button id="closeAudit">×</button></div>
+      <div id="auditContent" class="upload-status">Loading…</div>
+    </div>
+  </div>
+
   <div id="uploadModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head"><h2>Ingest Company Document</h2><button id="closeUpload">×</button></div>
       <p class="muted">Upload PDF, TXT, Markdown, or DOCX. The document is chunked, embedded, and indexed into Pinecone.</p>
       <input id="adminKey" type="password" placeholder="Admin API key" />
       <input id="fileInput" type="file" accept=".pdf,.txt,.md,.docx" />
+      <select id="deptSelect">
+        <option value="GENERAL">GENERAL (everyone)</option>
+        <option value="IT">IT</option>
+        <option value="HR">HR</option>
+        <option value="FINANCE">FINANCE</option>
+        <option value="SECURITY">SECURITY</option>
+      </select>
       <button id="uploadBtn" class="send-btn full">Index Document</button>
       <div id="uploadStatus" class="upload-status"></div>
     </div>

@@ -1,7 +1,5 @@
 import logging
 from typing import Literal
-from langchain_openai import ChatOpenAI
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, START, END
@@ -67,8 +65,23 @@ def route_after_router(state: AgentState) -> Literal["retrieve_kb", "direct_answ
     return "retrieve_kb" if state["source_used"] == "kb" else "direct_answer"
 
 def retrieve_kb(state: AgentState):
-    docs = get_retriever().invoke(state["current_query"])
-    return {"kb_docs": docs, "trace": add_trace(state, f"Private KB retrieval → {len(docs)} chunks")}
+    """Authorization-aware retrieval: Pinecone metadata filter restricts chunks to the
+    departments the requesting user's roles allow. Re-applied identically on retry loops
+    so rewrites can never widen access."""
+    allowed = state.get("allowed_departments") or []
+    retriever = get_retriever(allowed_departments=allowed)
+    docs = retriever.invoke(state["current_query"])
+    scope = ",".join(sorted(set(allowed) | {"GENERAL"})) if allowed else "UNRESTRICTED"
+    accessed = sorted({d.metadata.get("source", "unknown") for d in docs})
+    return {
+        "kb_docs": docs,
+        "trace": add_trace(
+            state,
+            f"Private KB retrieval (role-filter: {scope}) → {len(docs)} chunks "
+            f"from {len(accessed)} document(s)",
+        ),
+        "retrieved_sources": accessed,
+    }
 
 def grade_kb(state: AgentState):
     grader = llm().with_structured_output(EvidenceGrade, method="json_mode")
@@ -206,7 +219,7 @@ def build_graph():
 
 agent_graph = build_graph()
 
-def ask(question: str):
+def ask(question: str, username: str = "anonymous", allowed_departments: list[str] | None = None):
     initial: AgentState = {
         "question": question,
         "current_query": question,
@@ -219,5 +232,8 @@ def ask(question: str):
         "retry_count": 0,
         "trace": [],
         "citations": [],
+        "username": username,
+        "allowed_departments": list(allowed_departments),
+        "retrieved_sources": [],
     }
     return agent_graph.invoke(initial)

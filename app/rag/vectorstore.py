@@ -95,11 +95,24 @@ def get_vectorstore():
 
 
 
-def get_retriever():
-    return get_vectorstore().as_retriever(search_kwargs={"k": settings.top_k})
+def get_retriever(allowed_departments: list[str] | tuple[str, ...] | None = None):
+    """Build a retriever whose Pinecone search is filtered by department metadata.
+
+    Authorization-aware retrieval: if allowed_departments is provided, only chunks whose
+    'department' metadata value is in that set (or GENERAL/public) can be retrieved.
+    Enforcement happens inside Pinecone (metadata filter), not in post-hoc filtering.
+    """
+    search_kwargs: dict = {"k": settings.top_k}
+    if allowed_departments:
+        depts = set(allowed_departments) | {"GENERAL"}
+        search_kwargs["filter"] = {"department": {"$in": list(depts)}}
+    return get_vectorstore().as_retriever(search_kwargs=search_kwargs)
 
 
 
-def add_documents(chunks):
+def add_documents(chunks, department: str = "GENERAL"):
+    """Upsert chunks into Pinecone, tagging every vector with department metadata for RBAC."""
     store = get_vectorstore()
+    for chunk in chunks:
+        chunk.metadata["department"] = department.upper()
     return store.add_documents(chunks)

@@ -21,3 +21,6 @@ class AgentState(TypedDict):
     retry_count: int
     trace: List[str]
     citations: List[dict]
+    # Authorization-aware RAG: user principal carried through the graph
+    username: str
+    allowed_departments: List[str]
