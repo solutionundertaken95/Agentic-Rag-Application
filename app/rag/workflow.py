@@ -4,7 +4,7 @@ from langchain_groq import ChatGroq
 from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, START, END
 from app.core.config import get_settings
-from app.rag.state import AgentState, RouteDecision, EvidenceGrade, InternalTopicDecision
+from app.rag.state import AgentState, RouteDecision, EvidenceGrade, InternalTopicDecision, ConfidenceScore
 from app.rag.vectorstore import get_retriever
 
 logger = logging.getLogger(__name__)
@@ -231,6 +231,91 @@ Question: {state['question']}\n\nWeb evidence:\n{state['web_results']}
 """).content
     return {"answer": answer, "source_used": "web_search", "trace": add_trace(state, "Answer generation → WEB SEARCH")}
 
+def score_confidence(state: AgentState):
+    """LLM-as-judge: score how well the draft answer is supported by the actual evidence.
+    Applied to private-KB answers (the high-stakes path). 0-100."""
+    context = "\n\n".join(
+        f"[Source: {d.metadata.get('source','unknown')}]\n{d.page_content}" for d in state["kb_docs"]
+    )
+    judge = llm().with_structured_output(ConfidenceScore, method="json_mode")
+    verdict = judge.invoke(f"""
+You are a strict quality judge for an enterprise assistant. Score how confident you are
+that the DRAFT ANSWER is factually correct AND fully supported by the EVIDENCE.
+
+- 90-100: every claim in the answer is directly supported by the evidence
+- 70-89: mostly supported, minor gaps or extrapolation
+- 40-69: partially supported; some claims lack evidence or the evidence is only loosely related
+- 0-39: the evidence does not support the answer; likely hallucination or guess
+
+Do not reward fluent writing — only evidence support.
+
+QUESTION: {state['question']}
+
+EVIDENCE:
+{context}
+
+DRAFT ANSWER:
+{state['answer']}
+
+Return JSON like {{"confidence": 85}}.
+""")
+    score = int(verdict.confidence)
+    return {
+        "confidence": score,
+        "trace": add_trace(state, f"Confidence score → {score}/100 (threshold {settings.confidence_threshold})"),
+    }
+
+
+def after_confidence(state: AgentState) -> Literal["return_answer", "escalate_to_human"]:
+    return "return_answer" if state["confidence"] >= settings.confidence_threshold else "escalate_to_human"
+
+
+def return_answer(state: AgentState):
+    """Pass-through: the draft answer met the confidence threshold."""
+    return {"trace": add_trace(state, "Confidence check passed → answer released")}
+
+
+def escalate_to_human(state: AgentState):
+    """Human-in-the-loop: draft answer was below the confidence threshold.
+    Create an escalation ticket with the question, draft answer and retrieved evidence
+    attached, and hand it to the department reviewer instead of releasing the answer."""
+    from app.services.audit import create_escalation
+
+    # Which department owns this question? Use the departments of retrieved evidence;
+    # fall back to the first allowed department of the user.
+    depts = sorted({d.metadata.get("department", "GENERAL") for d in state.get("kb_docs", [])})
+    depts = [d for d in depts if d != "GENERAL"] or ["GENERAL"]
+    department = depts[0]
+
+    evidence = [
+        {
+            "source": d.metadata.get("source", "unknown"),
+            "department": d.metadata.get("department", "GENERAL"),
+            "excerpt": d.page_content[:800],
+        }
+        for d in state.get("kb_docs", [])
+    ]
+    ref = create_escalation(
+        username=state.get("username", "anonymous"),
+        roles=[],
+        question=state["question"],
+        draft_answer=state["answer"],
+        evidence=evidence,
+        confidence=state["confidence"],
+        department=department,
+    )
+    return {
+        "escalation_ref": ref,
+        "answer": (
+            f"I'm not confident enough ({state['confidence']}/100) that this answer is accurate, "
+            f"so I won't guess. I've escalated your question to a human reviewer — ticket {ref}. "
+            f"You can ask 'check my ticket status' to see the review outcome."
+        ),
+        "source_used": "escalated",
+        "citations": [],
+        "trace": add_trace(state, f"Confidence check FAILED → escalated to human reviewer ({ref}, dept: {department})"),
+    }
+
 def direct_answer(state: AgentState):
     answer = llm().invoke(f"Respond briefly and naturally to: {state['question']}").content
     return {"answer": answer, "source_used": "direct", "trace": add_trace(state, "Direct response → no retrieval")}
@@ -255,6 +340,9 @@ def build_graph():
         "rewrite_query": rewrite_query,
         "generate_from_kb": generate_from_kb,
         "generate_from_web": generate_from_web,
+        "score_confidence": score_confidence,
+        "escalate_to_human": escalate_to_human,
+        "return_answer": return_answer,
         "direct_answer": direct_answer,
         "insufficient": insufficient,
     }.items():
@@ -277,7 +365,12 @@ def build_graph():
         "generate_from_web": "generate_from_web", "rewrite_query": "rewrite_query", "insufficient": "insufficient"
     })
     graph.add_edge("rewrite_query", "retrieve_kb")
-    graph.add_edge("generate_from_kb", END)
+    graph.add_edge("generate_from_kb", "score_confidence")
+    graph.add_conditional_edges("score_confidence", after_confidence, {
+        "return_answer": "return_answer", "escalate_to_human": "escalate_to_human"
+    })
+    graph.add_edge("return_answer", END)
+    graph.add_edge("escalate_to_human", END)
     graph.add_edge("generate_from_web", END)
     graph.add_edge("denied_access", END)
     graph.add_edge("direct_answer", END)
@@ -304,5 +397,7 @@ def ask(question: str, username: str = "anonymous", allowed_departments: list[st
         "retrieved_sources": [],
         "kb_empty_in_scope": False,
         "is_internal_topic": False,
+        "confidence": 0,
+        "escalation_ref": "",
     }
     return agent_graph.invoke(initial)

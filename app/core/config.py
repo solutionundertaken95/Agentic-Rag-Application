@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     admin_api_key: str = "change-me"
     jwt_secret_key: str = "change-me-jwt-secret"
     audit_db_path: str = str(BASE_DIR / "data" / "audit.db")
+    # MySQL backing store for audit trail + escalation tickets
+    mysql_host: str = "127.0.0.1"
+    mysql_port: int = 3306
+    mysql_user: str = "root"
+    mysql_password: str = "password"
+    mysql_database: str = "agentic_rag"
+    # Human-in-the-loop escalation threshold (0-100)
+    confidence_threshold: int = 80
     upload_dir: str = str(BASE_DIR / "uploads")
     sample_kb_dir: str = str(BASE_DIR / "data" / "sample_kb")
 
