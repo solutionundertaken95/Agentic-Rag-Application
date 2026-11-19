@@ -74,6 +74,8 @@ def chat(payload: ChatRequest, user: User = Depends(get_current_user)):
             },
             "confidence": result.get("confidence"),
             "escalation_ref": result.get("escalation_ref") or None,
+            "tool_calls": result.get("tool_calls", []),
+            "pending_action_ref": result.get("pending_action_ref") or None,
         }
     except HTTPException:
         raise

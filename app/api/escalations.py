@@ -10,6 +10,7 @@ from app.auth.rbac import DEPARTMENTS, User
 from app.auth.routes import get_current_user, require_admin
 from app.core.config import get_settings
 from app.services import audit
+from app.rag import tools as action_tools
 
 router = APIRouter(prefix="/api/escalations", tags=["escalations"])
 settings = get_settings()
@@ -25,6 +26,38 @@ def _can_review(user: User, department: str) -> bool:
     if user.is_admin:
         return True
     return department in user.allowed_departments
+
+
+@router.get("/actions")
+def list_pending_actions(status_filter: str | None = None, user: User = Depends(get_current_user)):
+    """Reviewer queue for pending agent ACTIONS (mutating tool calls awaiting approval)."""
+    if user.is_admin:
+        items = action_tools.list_pending_actions(status=status_filter)
+    else:
+        items = []
+        for dept in user.allowed_departments:
+            items.extend(action_tools.list_pending_actions(status=status_filter, department=dept))
+        seen, uniq = set(), []
+        for a in items:
+            if a["action_ref"] not in seen:
+                seen.add(a["action_ref"]); uniq.append(a)
+        items = uniq
+    return {"count": len(items), "actions": items}
+
+
+@router.post("/actions/{action_ref}/review")
+def review_pending_action(action_ref: str, payload: ReviewRequest, user: User = Depends(get_current_user)):
+    """Approve (executes the tool via MCP) or reject a pending agent action."""
+    action = action_tools.get_pending_action(action_ref)
+    if action is None:
+        raise HTTPException(status_code=404, detail="Action not found.")
+    if not _can_review(user, action["department"]):
+        raise HTTPException(status_code=403, detail=f"Reviewer must own department {action['department']} or be Security Admin.")
+    updated = action_tools.decide_pending_action(action_ref, user.username, payload.resolution, payload.comment)
+    audit.write_document_access(user.username, user.roles,
+                                f"[action:{payload.resolution}] tool={action['tool_name']}",
+                                [{"document": action_ref, "department": action["department"]}])
+    return {"message": f"Action {action_ref} {payload.resolution}.", "action": updated}
 
 
 @router.get("")
