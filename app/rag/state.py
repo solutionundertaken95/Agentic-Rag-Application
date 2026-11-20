@@ -4,7 +4,14 @@ from pydantic import BaseModel, Field
 from langchain_core.documents import Document
 
 class RouteDecision(BaseModel):
-    route: Literal["kb", "direct"] = Field(description="kb for IT/support questions; direct for greetings/simple chat")
+    route: Literal["kb", "action", "direct"] = Field(description="kb = knowledge question; action = perform an action/tool call; direct = greetings/small talk")
+
+class ActionDecision(BaseModel):
+    """Which tool to call for an action request and with what arguments."""
+    tool: Literal["get_ticket_status", "search_incidents", "get_system_health",
+                  "create_service_desk_ticket", "reset_test_account", "none"] \
+        = Field(description="The tool to call, or none if no tool fits")
+    arguments: dict = Field(default_factory=dict, description="Arguments dict for the tool")
 
 class ConfidenceScore(BaseModel):
     """LLM-as-judge confidence that a draft answer is correct and grounded."""
@@ -39,3 +46,6 @@ class AgentState(TypedDict):
     # Human-in-the-loop escalation
     confidence: int
     escalation_ref: str
+    # Action Agent (MCP tool calling)
+    tool_calls: List[dict]
+    pending_action_ref: str

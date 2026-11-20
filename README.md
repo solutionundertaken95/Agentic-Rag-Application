@@ -25,6 +25,7 @@ This repository demonstrates how a production-grade enterprise AI assistant shou
 - [What We Built](#what-we-built)
 - [Feature 1 — Authorization-Aware RAG](#feature-1--authorization-aware-rag-rbac--document-level-security)
 - [Feature 2 — Human-in-the-Loop Escalation](#feature-2--human-in-the-loop-escalation-workflow)
+- [Feature 3 — Action Agent with MCP](#feature-3--action-agent-with-tool-calling-mcp-server)
 - [System Architecture](#system-architecture)
 - [API Surface](#api-surface)
 - [Actual Output](#actual-output)
@@ -41,12 +42,13 @@ This repository demonstrates how a production-grade enterprise AI assistant shou
 This project implements a full-stack agentic RAG workflow with:
 
 - A FastAPI backend and web UI with JWT login
-- LangGraph-powered agent orchestration (routing → retrieval → grading → confidence scoring → escalation/generation)
+- LangGraph-powered agent orchestration (routing → retrieval → grading → confidence scoring → escalation/generation → MCP tool calling)
 - **Role-Based Access Control** with 4 enterprise roles and JWT authentication
 - **Document-level security** — every Pinecone vector is tagged with a department and retrieval is filtered inside the vector DB
 - **Authorization-aware fallback** — internal-policy questions are never answered from the public web when the user lacks access
 - **Confidence scoring** — an LLM-as-judge scores every private-KB answer before release
 - **Human-in-the-loop escalation** — low-confidence answers become review tickets with evidence attached, resolved by department reviewers
+- **Action Agent** — governed tool calling through an MCP server (FastMCP): read-only tools execute immediately, mutating tools require human approval
 - **MySQL-backed audit trail** — every query, document access, and approval/rejection is recorded
 - Web fallback using Tavily (external topics only)
 - Document ingestion with department security tagging
@@ -61,7 +63,7 @@ The implementation is organized into application layers:
 app/
 ├── api/
 │   ├── routes.py          # chat + ingestion endpoints (JWT-protected)
-│   └── escalations.py     # human review workflow endpoints
+│   └── escalations.py     # human review workflow endpoints (answers + actions)
 ├── auth/
 │   ├── rbac.py            # roles, departments, seeded demo users
 │   ├── security.py        # JWT issuing/verification, bcrypt hashing
@@ -71,11 +73,15 @@ app/
 │   └── logging.py         # structured logging
 ├── rag/
 │   ├── state.py           # AgentState + structured LLM output models
+│   ├── tools.py           # MCP client, tool RBAC, pending-action store
 │   ├── vectorstore.py     # Pinecone + department-filtered retriever
-│   └── workflow.py        # the LangGraph agent (12 nodes)
+│   └── workflow.py        # the LangGraph agent (14 nodes)
 └── services/
     ├── audit.py           # MySQL audit trail + escalation tickets
-    └── ingestion.py       # document loading + chunking
+    ├── ingestion.py       # document loading + chunking
+    └── tool_data.py       # seeds incidents + service-desk tickets
+mcp_server/
+└── server.py              # FastMCP server: 5 governed tools (port 8001)
 data/
 └── sample_kb/             # sample docs per department (IT/HR/Finance/Security)
 templates/, static/        # frontend UI (login, chat, reviewer panels)
@@ -89,20 +95,20 @@ templates/, static/        # frontend UI (login, chat, reviewer panels)
 
 ### Roles and access
 
-| Role | Department document access | Admin capabilities |
-|---|---|---|
-| **IT Support** | IT, GENERAL | — |
-| **HR** | HR, GENERAL | — |
-| **Finance** | FINANCE, GENERAL | — |
-| **Security Admin** | ALL departments | Audit viewer, review all escalations, ingest any department |
+| Role               | Department document access | Admin capabilities                                          |
+| ------------------ | -------------------------- | ----------------------------------------------------------- |
+| **IT Support**     | IT, GENERAL                | —                                                           |
+| **HR**             | HR, GENERAL                | —                                                           |
+| **Finance**        | FINANCE, GENERAL           | —                                                           |
+| **Security Admin** | ALL departments            | Audit viewer, review all escalations, ingest any department |
 
 Seeded demo users (username / password):
 
-| User | Password | Role |
-|---|---|---|
-| `it.user` | `it-pass-123` | IT Support |
-| `hr.user` | `hr-pass-123` | HR |
-| `fin.user` | `fin-pass-123` | Finance |
+| User       | Password       | Role           |
+| ---------- | -------------- | -------------- |
+| `it.user`  | `it-pass-123`  | IT Support     |
+| `hr.user`  | `hr-pass-123`  | HR             |
+| `fin.user` | `fin-pass-123` | Finance        |
 | `secadmin` | `sec-pass-123` | Security Admin |
 
 ### How it works
@@ -110,18 +116,18 @@ Seeded demo users (username / password):
 1. **Login** — `POST /api/auth/login` validates credentials (bcrypt) and returns a signed JWT containing the user's roles and allowed departments.
 2. **Document tagging** — every document ingested via `/api/ingest` is tagged with a `department` metadata value on **every chunk** stored in Pinecone.
 3. **Filtered retrieval** — the retriever passes a Pinecone metadata filter (`department: {"$in": [...]}`) built from the user's roles. Enforcement happens **inside the vector database**, not in post-hoc filtering, so it cannot be bypassed by prompt manipulation.
-4. **Authorization-aware fallback** — if evidence is weak and the question is classified as an *internal company matter* (policy, payroll, procedures), the agent **withholds web fallback** and responds with an access-scope message instead. External topics (public outages, vendor docs) still reach Tavily.
-5. **Audit everything** — every query records *who* asked, and every retrieved document is logged per user, per department.
+4. **Authorization-aware fallback** — if evidence is weak and the question is classified as an _internal company matter_ (policy, payroll, procedures), the agent **withholds web fallback** and responds with an access-scope message instead. External topics (public outages, vendor docs) still reach Tavily.
+5. **Audit everything** — every query records _who_ asked, and every retrieved document is logged per user, per department.
 
 ### Verified behavior
 
-| Scenario | Result |
-|---|---|
-| HR user asks about sick days | ✅ Answered from HR doc, trace shows `role-filter: GENERAL,HR` |
-| Finance user asks the same question | ❌ HR doc invisible — no leak |
-| Finance user asks an HR-policy question | 🚫 `denied_access` — web fallback withheld |
-| Finance user asks "Microsoft Teams outage?" | 🌐 Web search (external topic — allowed) |
-| Non-admin reads the audit endpoint | 🚫 HTTP 403 |
+| Scenario                                    | Result                                                         |
+| ------------------------------------------- | -------------------------------------------------------------- |
+| HR user asks about sick days                | ✅ Answered from HR doc, trace shows `role-filter: GENERAL,HR` |
+| Finance user asks the same question         | ❌ HR doc invisible — no leak                                  |
+| Finance user asks an HR-policy question     | 🚫 `denied_access` — web fallback withheld                     |
+| Finance user asks "Microsoft Teams outage?" | 🌐 Web search (external topic — allowed)                       |
+| Non-admin reads the audit endpoint          | 🚫 HTTP 403                                                    |
 
 ---
 
@@ -148,6 +154,44 @@ flowchart LR
 
 ---
 
+## Feature 3 — Action Agent with Tool Calling (MCP Server)
+
+**Problem solved:** Move from answering questions to performing work — safely.
+
+The agent's capabilities are exposed as governed tools behind a **Model Context Protocol (MCP) server** (`mcp_server/server.py`, FastMCP, streamable-HTTP transport on port 8001) — the emerging open standard for connecting AI applications to external tools and data. The agent discovers tools from the MCP server at runtime rather than having them hardcoded.
+
+### Tools (MySQL-backed, ServiceNow-style schema)
+
+| Tool                                  | Type         | Behavior                                                            |
+| ------------------------------------- | ------------ | ------------------------------------------------------------------- |
+| `get_ticket_status(ticket_ref)`       | read-only    | Executed immediately via MCP                                        |
+| `search_incidents(query, department)` | read-only    | Executed immediately — department filtered to the user's RBAC scope |
+| `get_system_health()`                 | read-only    | Executed immediately — VPN/email/payroll/KB status                  |
+| `create_service_desk_ticket(...)`     | **mutating** | **Requires human approval** — raises a pending action               |
+| `reset_test_account(username)`        | **mutating** | **Requires human approval** — raises a pending action               |
+
+### How a mutating action flows
+
+```mermaid
+flowchart LR
+    A[User: create a ticket...] --> B[Router → ACTION]
+    B --> C[Tool Planner<br/>LLM picks tool + args]
+    C -->|read-only| D[MCP tool executes<br/>result summarized]
+    C -->|mutating| E[pending_actions table<br/>ACT-2026-00NN]
+    E --> F[Reviewer approves]
+    F --> G[MCP tool executes<br/>result stored]
+    E --> H[Reviewer rejects<br/>nothing executes]
+```
+
+- The **router** classifies `action` requests separately from knowledge questions.
+- A **tool planner** (structured output) maps the request to exactly one tool + arguments.
+- **RBAC on tools**: `reset_test_account` is restricted to IT/Security; Finance users attempting it are denied and logged.
+- Mutating tools **never execute on the agent's own authority** — they create a row in `pending_actions`, and only an approved review triggers execution through the MCP server. The execution result (e.g., the created ticket ref `SDT-5005`, or the temporary password from an account reset) is stored on the action record.
+
+This mirrors the control pattern enterprises use for agentic AI: **read freely, write only with a human signature.**
+
+---
+
 ## System Architecture
 
 ```mermaid
@@ -156,26 +200,32 @@ flowchart TD
     Login --> Web[Frontend UI]
     Web --> API[FastAPI API<br/>Authorization enforced]
     API --> Graph[LangGraph Agent Workflow]
-    Graph --> Router[Question Router]
+    Graph --> Router[Question Router<br/>kb / action / direct]
 
-    Router --> KB[Role-Filtered Retrieval<br/>Pinecone metadata filter]
-    Router --> Direct[Direct Response]
+    Router -->|action| Tools[Tool Planner]
+    Tools --> MCP[MCP Server<br/>FastMCP :8001]
+    MCP --> ReadOnly[Read-only tools<br/>status · incidents · health]
+    MCP --> Mutating[Pending Action<br/>ACT-2026-00NN]
+    Mutating -->|human approval| Exec[Tool executes]
 
+    Router -->|kb| KB[Role-Filtered Retrieval<br/>Pinecone metadata filter]
     KB --> GradeKB[Evidence Grader]
     GradeKB -->|good| Conf[Confidence Judge]
     GradeKB -->|weak + internal| Denied[Access-Scope Check<br/>→ denied_access]
     GradeKB -->|weak + external| WebSearch[Tavily Web Search]
 
     Conf -->|>= 80| KBAnswer[Release Answer]
-    Conf -->|< 80| Esc[Escalation Ticket<br/>MySQL + Human Review]
+    Conf -->|< 80| Esc[Escalation Ticket<br/>ESC-2026-00NN]
 
-    WebSearch --> WebAnswer[Web Answer<br/>labeled external]
-
-    KBAnswer --> Audit[(MySQL<br/>query_audit · document_access<br/>escalation_tickets)]
+    Audit[(MySQL<br/>query_audit · document_access<br/>escalation_tickets · pending_actions<br/>incidents · service_desk_tickets)]
+    KBAnswer --> Audit
     Esc --> Audit
     Denied --> Audit
-    WebAnswer --> Audit
+    Exec --> Audit
+    ReadOnly --> Audit
 ```
+
+The system runs **two processes**: the FastAPI app (port 8080) and the MCP tool server (port 8001). The agent discovers tools from the MCP server at runtime and calls them over streamable HTTP — tools are a pluggable, governed service rather than baked-in functions.
 
 ### Core workflow
 
@@ -192,19 +242,21 @@ flowchart TD
 
 ## API Surface
 
-| Endpoint | Method | Auth | Purpose |
-|---|---|---|---|
-| `/api/auth/login` | POST | — | Obtain a JWT (demo users above) |
-| `/api/auth/me` | GET | JWT | Current user's roles and department access |
-| `/api/auth/roles` | GET | — | Describe the RBAC role model |
-| `/api/health` | GET | — | Service health check |
-| `/api/chat` | POST | JWT | Ask a question — role-filtered, confidence-scored, audited |
-| `/api/ingest` | POST | JWT | Ingest a document with department security tagging |
-| `/api/escalations` | GET | JWT | Reviewer queue (department-scoped) |
-| `/api/escalations/mine` | GET | JWT | User's own ticket statuses |
-| `/api/escalations/{ref}` | GET | JWT | Ticket detail with attached evidence |
-| `/api/escalations/{ref}/review` | POST | JWT | Approve/reject with comment (reviewers only) |
-| `/api/admin/audit` | GET | Admin | Full audit trail + document access + summary |
+| Endpoint                                | Method | Auth  | Purpose                                                    |
+| --------------------------------------- | ------ | ----- | ---------------------------------------------------------- |
+| `/api/auth/login`                       | POST   | —     | Obtain a JWT (demo users above)                            |
+| `/api/auth/me`                          | GET    | JWT   | Current user's roles and department access                 |
+| `/api/auth/roles`                       | GET    | —     | Describe the RBAC role model                               |
+| `/api/health`                           | GET    | —     | Service health check                                       |
+| `/api/chat`                             | POST   | JWT   | Ask a question — role-filtered, confidence-scored, audited |
+| `/api/ingest`                           | POST   | JWT   | Ingest a document with department security tagging         |
+| `/api/escalations`                      | GET    | JWT   | Reviewer queue (department-scoped)                         |
+| `/api/escalations/mine`                 | GET    | JWT   | User's own ticket statuses                                 |
+| `/api/escalations/{ref}`                | GET    | JWT   | Ticket detail with attached evidence                       |
+| `/api/escalations/{ref}/review`         | POST   | JWT   | Approve/reject with comment (reviewers only)               |
+| `/api/escalations/actions`              | GET    | JWT   | Pending agent actions queue (department-scoped)            |
+| `/api/escalations/actions/{ref}/review` | POST   | JWT   | Approve (executes via MCP) / reject an agent action        |
+| `/api/admin/audit`                      | GET    | Admin | Full audit trail + document access + summary               |
 
 ---
 
@@ -331,18 +383,40 @@ Ingestion requires authentication, and users can only tag documents into departm
 
 ---
 
+### 7. Governing what the AI is allowed to DO
+
+Answering questions safely is not enough — once an agent can create tickets or reset accounts, a wrong tool call becomes an incident.
+
+**Solution:**
+Tools are exposed behind an MCP server with a strict read/write governance split. Read-only tools execute immediately (still RBAC-scoped); mutating tools can never run on the agent's own authority — they raise a pending action that a department reviewer must approve, and the tool executes only on approval, with the result recorded. Tool-level RBAC additionally restricts who can even request sensitive tools (e.g., account resets are IT/Security only).
+
+---
+
 ## Results and Impact
 
-This repository demonstrates a working prototype for **secure, accountable** agentic knowledge retrieval:
+This repository demonstrates a working prototype for **secure, accountable, action-capable** agentic knowledge retrieval:
 
 - FastAPI application server with JWT + RBAC authentication
-- LangGraph orchestration: routing → filtered retrieval → grading → confidence scoring → escalation/generation
+- LangGraph orchestration: routing → filtered retrieval → grading → confidence scoring → escalation/generation → MCP tool calling
 - Pinecone vector retrieval with document-level security filters
 - Groq-based LLM routing, generation, grading, and confidence judging
+- MCP server (FastMCP) exposing governed enterprise tools over streamable HTTP
+- Read-and-write separation for agent actions: read-only executes, mutations require human signature
 - Human-in-the-loop review workflow with department-scoped reviewers
-- MySQL persistence for audit trail and escalation tickets
+- MySQL persistence for audit trail, escalation tickets, pending actions, and tool data
 - Tavily web fallback restricted to external topics
 - Docker-based deployment support
+
+### Quantifiable project facts
+
+- 1 FastAPI application entrypoint + 1 MCP tool server process
+- 5 application layers: `api`, `auth`, `core`, `rag`, `services`
+- 14 LangGraph workflow nodes (routing, confidence scoring, escalation, MCP tool calling)
+- 5 MCP tools (3 read-only, 2 approval-gated mutating)
+- 4 RBAC roles with department-scoped document access **and** tool permissions
+- 6 MySQL tables backing the audit, review, and tool-data trail
+- 13 API endpoints (auth, chat, ingest, escalations, actions, audit)
+- 6 sample knowledge-base documents across 4 departments
 
 ---
 
@@ -416,7 +490,13 @@ python ingest_sample_kb.py
 
 ### 6. Run the app
 
+Start the MCP tool server (port 8001), then the app (port 8080):
+
 ```bash
+# Terminal 1 — MCP server (Action Agent tools)
+python -m mcp_server.server
+
+# Terminal 2 — main app
 python run.py
 ```
 
@@ -435,18 +515,21 @@ docker run -p 8080:8080 --env-file .env agentic-rag-app
 
 ### 8. Try the demo flows
 
-- **Happy path:** as `hr.user`, ask *"How many paid sick days do employees get?"* → confident answer from the HR doc.
+- **Happy path:** as `hr.user`, ask _"How many paid sick days do employees get?"_ → confident answer from the HR doc.
 - **Access blocked:** as `fin.user`, ask the same → the HR document is invisible; internal topics are not answered from the web.
-- **Escalation:** as `hr.user`, ask *"How does the sick leave policy interact with the employee assistance program, and what should their manager be told?"* → low confidence → ticket created.
+- **Escalation:** as `hr.user`, ask _"How does the sick leave policy interact with the employee assistance program, and what should their manager be told?"_ → low confidence → ticket created.
 - **Human review:** sign in as `secadmin` (or `hr.user` as department owner) → Escalations panel → inspect evidence → Approve/Reject.
 - **Audit:** as `secadmin`, open the Audit Trail panel — every query, document access, and review decision is there.
+- **Action Agent (read-only):** as `it.user`, ask _"What is the status of ticket SDT-5001?"_ or _"Is the VPN healthy?"_ → the agent calls the MCP tool and summarizes the live result.
+- **Action Agent (approval-gated):** as `it.user`, ask _"Create a service desk ticket to replace a faulty laptop battery, P2"_ → pending action `ACT-...`; approve it in the Escalations panel as `secadmin` → the tool executes via MCP and ticket `SDT-...` appears in MySQL.
+- **Tool RBAC:** as `fin.user`, ask _"Reset test account john.doe"_ → denied with an audit log entry; as `it.user`, the same request goes to approval.
 
 ---
 
 ## Future Scope
 
-- **Action Agent (RAG + tool calling)** — read-only tools (ticket status, incident search) immediately; mutating tools (create ServiceNow ticket, reset test account) gated through the human-approval workflow
 - **Retrieval evaluation & hallucination detection** — automated RAGAS/DeepEval pipeline measuring answer faithfulness, context precision, and hallucination rates (confidence scores already logged as the dataset)
+- Real ServiceNow / Jira connectors replacing the simulated MCP tools
 - Re-deliver approved escalation answers back to the requesting user automatically
 - Improve agent memory and session continuity
 - Add support for more enterprise document types

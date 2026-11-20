@@ -132,6 +132,10 @@ askAgent = async function(q){
     if(data.confidence !== null && data.confidence !== undefined){
       sourceUsed.textContent = `${toStr(data.source_used)} (confidence ${data.confidence}/100)`;
     }
+    if(data.tool_calls && data.tool_calls.length){
+      const tc = data.tool_calls[0];
+      renderTrace([...(data.trace||[]), `Tool → ${tc.tool}(${JSON.stringify(tc.arguments||{})})${tc.pending_action ? ' → approval ' + tc.pending_action : ''}${tc.denied ? ' → RBAC DENIED' : ''}`]);
+    }
   }catch(e){ addMessage('assistant', `Error: ${e.message}`); renderTrace(['Request failed']); sourceUsed.textContent = 'Error'; }
   finally{ btn.disabled = false; }
 };
@@ -172,22 +176,50 @@ document.getElementById('openEscalations').onclick = async () => {
   try{
     const r = await fetch('/api/escalations', {headers: authHeaders()});
     const d = await r.json(); if(!r.ok) throw new Error(d.detail||'Failed');
-    if(!d.tickets.length){ box.innerHTML = '<p>No escalations pending. 🎉</p>'; return; }
-    box.innerHTML = d.tickets.map(t => `
+    const ra = await fetch('/api/escalations/actions', {headers: authHeaders()});
+    const da = await ra.json(); if(!ra.ok) throw new Error(da.detail||'Failed');
+    let html = '';
+    if(da.actions.length){
+      html += '<h3>Pending Agent Actions</h3>' + da.actions.map(a => `
+      <div class="trace-item" style="text-align:left">
+        <strong>${escapeHtml(a.action_ref)}</strong> [${escapeHtml(a.department)}] — ${escapeHtml(a.status)}<br>
+        <em>Tool:</em> ${escapeHtml(a.tool_name)}<br>
+        <em>Args:</em> ${escapeHtml(JSON.stringify(a.arguments))}<br>
+        <em>Requested by:</em> ${escapeHtml(a.username)}
+        ${a.status==='pending_approval' ? `
+          <textarea id="acmt-${escapeHtml(a.action_ref)}" rows="2" placeholder="Reviewer comment" style="width:100%"></textarea>
+          <button onclick="reviewAction('${escapeHtml(a.action_ref)}','approved')">Approve & Execute</button>
+          <button onclick="reviewAction('${escapeHtml(a.action_ref)}','rejected')">Reject</button>` :
+          `<em>${escapeHtml(a.resolution||'')}</em> by ${escapeHtml(a.reviewer||'')} — result: ${escapeHtml((a.execution_result||'').slice(0,120))}`}
+      </div>`).join('');
+    }
+    if(d.tickets.length){
+      html += '<h3>Answer Escalations</h3>' + d.tickets.map(t => `
       <div class="trace-item" style="text-align:left">
         <strong>${escapeHtml(t.ticket_ref)}</strong> [${escapeHtml(t.department)}] conf ${t.confidence}/100 — ${escapeHtml(t.status)}<br>
         <em>Q:</em> ${escapeHtml(t.question)}<br>
         <em>Draft:</em> ${escapeHtml((t.draft_answer||'').slice(0,300))}<br>
-        <em>Evidence:</em> ${(t.evidence||[]).map(e=>`<li>${escapeHtml(e.source.split('/').pop())} [${escapeHtml(e.department)}]: ${escapeHtml((e.excerpt||'').slice(0,150))}</li>`).join('')}
         ${t.status==='pending' ? `
           <textarea id="cmt-${escapeHtml(t.ticket_ref)}" rows="2" placeholder="Reviewer comment" style="width:100%"></textarea>
           <button onclick="reviewTicket('${escapeHtml(t.ticket_ref)}','approved')">Approve</button>
           <button onclick="reviewTicket('${escapeHtml(t.ticket_ref)}','rejected')">Reject</button>` :
           `<em>${escapeHtml(t.resolution||'')}</em> by ${escapeHtml(t.reviewer||'')}: ${escapeHtml(t.reviewer_comment||'')}`}
       </div>`).join('');
+    }
+    box.innerHTML = html || '<p>No escalations or pending actions. 🎉</p>';
   }catch(e){ box.textContent = 'Error: ' + e.message; }
 };
 document.getElementById('closeEscalations').onclick = () => escModal.classList.add('hidden');
+
+window.reviewAction = async function(ref, resolution){
+  const comment = document.getElementById('acmt-'+ref)?.value || '';
+  try{
+    const r = await fetch(`/api/escalations/actions/${ref}/review`, {method:'POST', headers: authHeaders({'Content-Type':'application/json'}), body: JSON.stringify({resolution, comment})});
+    const d = await r.json(); if(!r.ok) throw new Error(d.detail||'Failed');
+    if(d.action && d.action.execution_result){ alert('Executed: ' + d.action.execution_result.slice(0,200)); }
+    document.getElementById('openEscalations').click();
+  }catch(e){ alert('Review failed: ' + e.message); }
+};
 
 window.reviewTicket = async function(ref, resolution){
   const comment = document.getElementById('cmt-'+ref)?.value || '';

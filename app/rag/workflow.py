@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Literal
 from langchain_groq import ChatGroq
@@ -45,23 +46,28 @@ def add_trace(state: AgentState, message: str):
 def route_question(state: AgentState):
     router = llm().with_structured_output(RouteDecision, method="json_mode")
     decision = router.invoke(f"""
-You route messages for an enterprise IT support assistant that has access to a private
-company knowledge base containing uploaded documents on any topic (policies, procedures,
-product info, HR, IT, or anything else the company has indexed).
+You route messages for an enterprise IT support assistant. The assistant can ALSO
+perform actions via tools: check service-desk ticket status (e.g. "SDT-5001"),
+search the incident database, check system health, request a new service-desk
+ticket, or request a test-account password reset.
 
-Use "kb" for ANY question that could plausibly be answered using company documents or
-knowledge — this includes IT topics, policies, procedures, product/service questions,
-or anything specific/informational. When in doubt, choose "kb".
+Classify the message:
+- "kb" — ANY question that could plausibly be answered from company documents,
+  knowledge, policies, or procedures. When in doubt, choose "kb".
+- "action" — the user wants an ACTION performed or live operational data:
+  ticket status lookups (mentions SDT-/INC- refs or "status of my ticket"),
+  incident history searches ("incidents about phishing"), system health
+  ("is the VPN down right now"), creating a ticket, or resetting an account.
+- "direct" — greetings, thanks, small talk only.
 
-Use "direct" ONLY for greetings, thanks, small talk, or questions with no possible
-connection to company knowledge (e.g. "hello", "thank you", "how are you").
-
-Question: {state['question']}
+Message: {state['question']}
 Return valid JSON like {{"route":"kb"}}.
 """)
     return {"source_used": decision.route, "trace": add_trace(state, f"Router → {decision.route.upper()}")}
 
-def route_after_router(state: AgentState) -> Literal["retrieve_kb", "direct_answer"]:
+def route_after_router(state: AgentState) -> Literal["retrieve_kb", "run_action", "direct_answer"]:
+    if state["source_used"] == "action":
+        return "run_action"
     return "retrieve_kb" if state["source_used"] == "kb" else "direct_answer"
 
 def retrieve_kb(state: AgentState):
@@ -316,6 +322,111 @@ def escalate_to_human(state: AgentState):
         "trace": add_trace(state, f"Confidence check FAILED → escalated to human reviewer ({ref}, dept: {department})"),
     }
 
+def run_action(state: AgentState):
+    """Action Agent node: pick a tool via the LLM, apply RBAC, then either execute
+    directly (read-only, via the MCP server) or create a pending action for
+    human approval (mutating)."""
+    import asyncio
+    from app.rag.tools import (
+        MUTATING_TOOLS, call_mcp_tool, create_pending_action, tool_departments_for_user,
+    )
+    from app.rag.state import ActionDecision
+
+    allowed = state.get("allowed_departments") or []
+    permitted = tool_departments_for_user(allowed)
+
+    planner = llm().with_structured_output(ActionDecision, method="json_mode")
+    decision = planner.invoke(f"""
+You operate enterprise support tools for a logged-in user.
+
+Available tools:
+1. get_ticket_status(ticket_ref) — look up service-desk ticket by ref like "SDT-5001".
+2. search_incidents(query, department, limit) — keyword-search the incident database;
+   department must be one of the user's allowed departments (or empty for all allowed).
+3. get_system_health() — no arguments; current status of VPN, email, payroll, KB.
+4. create_service_desk_ticket(title, description, priority, department, requester) —
+   REQUEST a new ticket; needs human approval; department must be in the user's scope.
+5. reset_test_account(username) — REQUEST a test-account password reset; needs approval.
+   If the request mentions resetting an account/password, you MUST choose this tool.
+
+User: {state.get('username')} (allowed departments: {', '.join(allowed) or 'none'})
+Tool request permissions (true = user may request it): {json.dumps(permitted)}
+Request: {state['question']}
+
+Pick exactly one tool (or "none" if nothing fits). Only choose tools with permission true.
+IMPORTANT: requests to CREATE or RAISE a ticket for ANY issue MUST use
+create_service_desk_ticket — derive title/description/priority from the request;
+requester = the username. Return JSON only:
+{{"tool":"get_ticket_status","arguments":{{"ticket_ref":"SDT-5001"}}}}
+""")
+
+    tool = decision.tool
+    args = decision.arguments or {}
+    if tool == "none":
+        # Distinguish "no tool fits" from "tool fits but RBAC forbids it"
+        denied_hint = ""
+        q = state['question'].lower()
+        if any(k in q for k in ["reset", "password"]) and not permitted.get("reset_test_account"):
+            denied_hint = " Note: account resets are restricted to IT and Security roles."
+        return {
+            "answer": "I couldn't map that request to an available action. Available: ticket status (SDT refs), incident search, system health, ticket creation, test-account reset." + denied_hint,
+            "source_used": "action_failed",
+            "trace": add_trace(state, "Action Agent → no suitable tool"),
+            "tool_calls": [],
+        }
+
+    if not permitted.get(tool, False):
+        return {
+            "answer": (
+                f"Your role is not authorized to use the '{tool}' action — it requires "
+                f"IT or Security department access. This attempt has been logged in the audit trail."
+            ),
+            "source_used": "action_denied",
+            "trace": add_trace(state, f"Action Agent → RBAC denied tool '{tool}'"),
+            "tool_calls": [{"tool": tool, "arguments": args, "denied": True}],
+        }
+
+    if tool in MUTATING_TOOLS:
+        # Governance gate: create pending action; executed only after approval.
+        depts = [d.upper() for d in (args.get("department") or "") .split(",") if d.strip()] or ([allowed[0]] if allowed else ["GENERAL"])
+        ref = create_pending_action(
+            username=state.get("username", "anonymous"),
+            roles=[],
+            tool_name=tool,
+            arguments=args,
+            department=depts[0],
+        )
+        return {
+            "answer": (
+                f"That action changes company systems, so it needs human approval before I can run it. "
+                f"I've raised approval request {ref} for '{tool}' — a department reviewer will approve or "
+                f"reject it, and the action executes automatically on approval."
+            ),
+            "source_used": "pending_approval",
+            "pending_action_ref": ref,
+            "tool_calls": [{"tool": tool, "arguments": args, "pending_action": ref}],
+            "trace": add_trace(state, f"Action Agent → '{tool}' requires approval → pending action {ref}"),
+        }
+
+    # Read-only: execute immediately via MCP
+    raw = asyncio.run(call_mcp_tool(tool, args))
+    try:
+        result = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        result = {"raw": raw}
+    summary = llm().invoke(f"""
+Summarize this tool result for the user in 2-4 sentences, answering their request directly.
+Request: {state['question']}
+Tool result (JSON): {json.dumps(result)[:2500]}
+""").content
+    return {
+        "answer": summary,
+        "source_used": "tool_result",
+        "citations": [{"title": f"Tool: {tool}", "url": "", "type": "mcp_tool"}],
+        "tool_calls": [{"tool": tool, "arguments": args, "result": result}],
+        "trace": add_trace(state, f"Action Agent → MCP tool '{tool}' executed"),
+    }
+
 def direct_answer(state: AgentState):
     answer = llm().invoke(f"Respond briefly and naturally to: {state['question']}").content
     return {"answer": answer, "source_used": "direct", "trace": add_trace(state, "Direct response → no retrieval")}
@@ -344,13 +455,14 @@ def build_graph():
         "escalate_to_human": escalate_to_human,
         "return_answer": return_answer,
         "direct_answer": direct_answer,
+        "run_action": run_action,
         "insufficient": insufficient,
     }.items():
         graph.add_node(name, fn)
 
     graph.add_edge(START, "route_question")
     graph.add_conditional_edges("route_question", route_after_router, {
-        "retrieve_kb": "retrieve_kb", "direct_answer": "direct_answer"
+        "retrieve_kb": "retrieve_kb", "run_action": "run_action", "direct_answer": "direct_answer"
     })
     graph.add_edge("retrieve_kb", "grade_kb")
     graph.add_conditional_edges("grade_kb", after_kb, {
@@ -374,6 +486,7 @@ def build_graph():
     graph.add_edge("generate_from_web", END)
     graph.add_edge("denied_access", END)
     graph.add_edge("direct_answer", END)
+    graph.add_edge("run_action", END)
     graph.add_edge("insufficient", END)
     return graph.compile()
 
@@ -399,5 +512,7 @@ def ask(question: str, username: str = "anonymous", allowed_departments: list[st
         "is_internal_topic": False,
         "confidence": 0,
         "escalation_ref": "",
+        "tool_calls": [],
+        "pending_action_ref": "",
     }
     return agent_graph.invoke(initial)
