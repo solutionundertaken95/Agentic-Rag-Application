@@ -3,6 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-Agent%20Orchestration-1C3C3C.svg?logo=langchain&logoColor=white)](https://www.langchain.com/langgraph)
+[![MCP](https://img.shields.io/badge/MCP-Tool%20Server-8A2BE2.svg)](https://modelcontextprotocol.io/)
 [![Pinecone](https://img.shields.io/badge/Pinecone-Vector%20DB-000000.svg)](https://www.pinecone.io/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1.svg?logo=mysql&logoColor=white)](https://www.mysql.com/)
 [![Groq](https://img.shields.io/badge/Groq-LLM%20Inference-F55036.svg)](https://groq.com/)
@@ -10,13 +11,14 @@
 [![JWT](https://img.shields.io/badge/Auth-JWT%20%2B%20RBAC-000000.svg?logo=jsonwebtokens&logoColor=white)](https://jwt.io/)
 [![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
 
-An intelligent, **authorization-aware**, agentic retrieval-augmented generation (RAG) application built in Python for enterprise knowledge assistance. The project combines FastAPI, LangGraph, Pinecone, MySQL, and LLM-based reasoning to route user questions, retrieve role-filtered context from a private knowledge base, escalate low-confidence answers to human reviewers, and fall back to web search only when it is safe to do so.
+An intelligent, **authorization-aware, action-capable** agentic retrieval-augmented generation (RAG) application built in Python for enterprise knowledge assistance. The project combines FastAPI, LangGraph, Pinecone, MySQL, an **MCP tool server**, and LLM-based reasoning to route user questions, retrieve role-filtered context from a private knowledge base, answer with a confidence gate, **execute governed tool actions (ServiceNow-style tickets, incident search, account resets) through a Model Context Protocol server**, escalate anything uncertain to human reviewers, and fall back to web search only when it is safe to do so.
 
-This repository demonstrates how a production-grade enterprise AI assistant should handle the three questions every company asks before deploying LLMs:
+This repository demonstrates how a production-grade enterprise AI assistant should answer the four questions every company asks before deploying LLMs:
 
-1. **Who is allowed to see what?** → Authorization-Aware RAG (RBAC + document-level security)
-2. **What happens when the AI is not sure?** → Human-in-the-Loop escalation with confidence scoring
-3. **Can we prove it?** → Full audit trail of queries, document access, and human decisions
+1. **Who is allowed to see what?** → Authorization-Aware RAG (RBAC + document-level security inside Pinecone)
+2. **What happens when the AI is not sure?** → Human-in-the-Loop escalation with LLM-as-judge confidence scoring
+3. **What is the AI allowed to DO?** → Action Agent with MCP tool calling — read-only tools execute freely, mutating tools require a human signature
+4. **Can we prove all of it?** → MySQL audit trail of queries, document access, tool executions, and human decisions
 
 ---
 
@@ -49,21 +51,19 @@ This project implements a full-stack agentic RAG workflow with:
 - **Confidence scoring** — an LLM-as-judge scores every private-KB answer before release
 - **Human-in-the-loop escalation** — low-confidence answers become review tickets with evidence attached, resolved by department reviewers
 - **Action Agent** — governed tool calling through an MCP server (FastMCP): read-only tools execute immediately, mutating tools require human approval
-- **MySQL-backed audit trail** — every query, document access, and approval/rejection is recorded
+- **MySQL-backed audit trail** — every query, document access, tool execution, and approval/rejection is recorded
 - Web fallback using Tavily (external topics only)
 - Document ingestion with department security tagging
 
-The application is designed around a real enterprise support use case: answering user queries using company knowledge while ensuring users can never retrieve documents outside their role's access scope.
+The application is designed around a real enterprise support use case: answering user queries using company knowledge, performing actions in company systems, and ensuring users can neither retrieve documents outside their role's access scope nor trigger state-changing operations without a human signature.
 
 ### Repository composition
-
-The implementation is organized into application layers:
 
 ```
 app/
 ├── api/
 │   ├── routes.py          # chat + ingestion endpoints (JWT-protected)
-│   └── escalations.py     # human review workflow endpoints (answers + actions)
+│   └── escalations.py     # human review workflow endpoints (answers + agent actions)
 ├── auth/
 │   ├── rbac.py            # roles, departments, seeded demo users
 │   ├── security.py        # JWT issuing/verification, bcrypt hashing
@@ -95,12 +95,12 @@ templates/, static/        # frontend UI (login, chat, reviewer panels)
 
 ### Roles and access
 
-| Role               | Department document access | Admin capabilities                                          |
-| ------------------ | -------------------------- | ----------------------------------------------------------- |
-| **IT Support**     | IT, GENERAL                | —                                                           |
-| **HR**             | HR, GENERAL                | —                                                           |
-| **Finance**        | FINANCE, GENERAL           | —                                                           |
-| **Security Admin** | ALL departments            | Audit viewer, review all escalations, ingest any department |
+| Role               | Department document access | Admin capabilities                                              |
+| ------------------ | -------------------------- | --------------------------------------------------------------- |
+| **IT Support**     | IT, GENERAL                | —                                                               |
+| **HR**             | HR, GENERAL                | —                                                               |
+| **Finance**        | FINANCE, GENERAL           | —                                                               |
+| **Security Admin** | ALL departments            | Audit viewer, review all escalations & actions, ingest anywhere |
 
 Seeded demo users (username / password):
 
@@ -158,7 +158,7 @@ flowchart LR
 
 **Problem solved:** Move from answering questions to performing work — safely.
 
-The agent's capabilities are exposed as governed tools behind a **Model Context Protocol (MCP) server** (`mcp_server/server.py`, FastMCP, streamable-HTTP transport on port 8001) — the emerging open standard for connecting AI applications to external tools and data. The agent discovers tools from the MCP server at runtime rather than having them hardcoded.
+The agent's capabilities are exposed as governed tools behind a **Model Context Protocol (MCP) server** (`mcp_server/server.py`, FastMCP, streamable-HTTP transport on port 8001) — the emerging open standard for connecting AI applications to external tools and data. The agent discovers tools from the MCP server at runtime rather than having them hardcoded, so capabilities are a pluggable, governed service.
 
 ### Tools (MySQL-backed, ServiceNow-style schema)
 
@@ -168,7 +168,7 @@ The agent's capabilities are exposed as governed tools behind a **Model Context 
 | `search_incidents(query, department)` | read-only    | Executed immediately — department filtered to the user's RBAC scope |
 | `get_system_health()`                 | read-only    | Executed immediately — VPN/email/payroll/KB status                  |
 | `create_service_desk_ticket(...)`     | **mutating** | **Requires human approval** — raises a pending action               |
-| `reset_test_account(username)`        | **mutating** | **Requires human approval** — raises a pending action               |
+| `reset_test_account(username)`        | **mutating** | **Requires approval + IT/Security role** — raises a pending action  |
 
 ### How a mutating action flows
 
@@ -230,45 +230,43 @@ The system runs **two processes**: the FastAPI app (port 8080) and the MCP tool 
 ### Core workflow
 
 1. The user logs in and receives a JWT with their roles/allowed departments.
-2. The router classifies the question (KB vs. conversational).
-3. Relevant documents are retrieved from Pinecone **filtered by the user's department access**.
-4. The model grades the retrieved evidence.
-5. If evidence is weak, an access-scope check decides between web fallback (external topics) and a denied-access response (internal topics the user cannot see).
-6. If evidence is good, a draft answer is generated and **scored for confidence** by an LLM judge.
-7. Confident answers are released; low-confidence answers are escalated to a human reviewer with evidence attached.
-8. The system returns: answer, source used, confidence score, citations, access scope, and the reasoning trace — all logged to MySQL.
+2. The router classifies each message as a knowledge question, an **action request**, or small talk.
+3. Knowledge path: documents retrieved from Pinecone **filtered by the user's department access** → evidence graded → weak evidence goes through an access-scope check (internal topic = denied-access message, external topic = Tavily).
+4. Good evidence → draft answer → **confidence judge** → released at/above threshold, escalated to a human reviewer below it.
+5. Action path: **tool planner** picks an MCP tool → read-only executes immediately → mutating raises a pending action that executes only after human approval.
+6. The system returns: answer, source used, confidence score, citations, access scope, tool-call details, and the reasoning trace — all logged to MySQL.
 
 ---
 
 ## API Surface
 
-| Endpoint                                | Method | Auth  | Purpose                                                    |
-| --------------------------------------- | ------ | ----- | ---------------------------------------------------------- |
-| `/api/auth/login`                       | POST   | —     | Obtain a JWT (demo users above)                            |
-| `/api/auth/me`                          | GET    | JWT   | Current user's roles and department access                 |
-| `/api/auth/roles`                       | GET    | —     | Describe the RBAC role model                               |
-| `/api/health`                           | GET    | —     | Service health check                                       |
-| `/api/chat`                             | POST   | JWT   | Ask a question — role-filtered, confidence-scored, audited |
-| `/api/ingest`                           | POST   | JWT   | Ingest a document with department security tagging         |
-| `/api/escalations`                      | GET    | JWT   | Reviewer queue (department-scoped)                         |
-| `/api/escalations/mine`                 | GET    | JWT   | User's own ticket statuses                                 |
-| `/api/escalations/{ref}`                | GET    | JWT   | Ticket detail with attached evidence                       |
-| `/api/escalations/{ref}/review`         | POST   | JWT   | Approve/reject with comment (reviewers only)               |
-| `/api/escalations/actions`              | GET    | JWT   | Pending agent actions queue (department-scoped)            |
-| `/api/escalations/actions/{ref}/review` | POST   | JWT   | Approve (executes via MCP) / reject an agent action        |
-| `/api/admin/audit`                      | GET    | Admin | Full audit trail + document access + summary               |
+| Endpoint                                | Method | Auth  | Purpose                                                      |
+| --------------------------------------- | ------ | ----- | ------------------------------------------------------------ |
+| `/api/auth/login`                       | POST   | —     | Obtain a JWT (demo users above)                              |
+| `/api/auth/me`                          | GET    | JWT   | Current user's roles and department access                   |
+| `/api/auth/roles`                       | GET    | —     | Describe the RBAC role model                                 |
+| `/api/health`                           | GET    | —     | Service health check                                         |
+| `/api/chat`                             | POST   | JWT   | Ask a question or request an action — role-filtered, audited |
+| `/api/ingest`                           | POST   | JWT   | Ingest a document with department security tagging           |
+| `/api/escalations`                      | GET    | JWT   | Escalation reviewer queue (department-scoped)                |
+| `/api/escalations/mine`                 | GET    | JWT   | User's own ticket statuses                                   |
+| `/api/escalations/{ref}`                | GET    | JWT   | Ticket detail with attached evidence                         |
+| `/api/escalations/{ref}/review`         | POST   | JWT   | Approve/reject an escalated answer (reviewers only)          |
+| `/api/escalations/actions`              | GET    | JWT   | Pending agent actions queue (department-scoped)              |
+| `/api/escalations/actions/{ref}/review` | POST   | JWT   | Approve (executes via MCP) / reject an agent action          |
+| `/api/admin/audit`                      | GET    | Admin | Full audit trail + document access + summary                 |
 
 ---
 
 ## Actual Output
 
-Screenshots from a live session are below (stored in the `screenshots/` folder).
+Screenshots from live sessions are below (stored in the `screenshots/` folder).
 
 ### 1. Login
 
 JWT-based sign-in with RBAC roles — each demo user maps to a department scope.
 
-![Login](screenshots/login.png)
+![Login](screenshots/Login.png)
 
 ### 2. Home Page
 
@@ -294,7 +292,7 @@ For genuinely external questions (vendor/product/public information), the agent 
 
 ![Web Search](screenshots/Web_Search.png)
 
-![Web Search 2](screenshots/Web_Search2.png)
+![Web Search 2](screenshots/Web_Search_2.png)
 
 ### 7. Low Confidence → Escalation
 
@@ -308,9 +306,33 @@ The department reviewer opens the escalation queue, inspects the question, draft
 
 ![Approval](screenshots/Approval.png)
 
-### 9. MySQL Tables
+### 9. Action Agent — Tool Execution (Read-Only)
 
-All audit and escalation data is persisted in the `agentic_rag` MySQL database.
+A live MCP tool call: the agent routes the request to `get_ticket_status`, executes it on the MCP server, and summarizes the result — with the tool call visible in the trace.
+
+![Tool Positive](screenshots/Tool_Postive.png)
+
+### 10. Action Agent — Approval-Gated Mutation
+
+A mutating tool request (create service-desk ticket) does **not** execute. It raises a pending action that the department reviewer must approve — only then does the MCP tool run.
+
+![Tool Approval](screenshots/Tool_Approval.png)
+
+### 11. Tool RBAC — Denied Attempt
+
+A Finance user requests a test-account reset. The tool is restricted to IT/Security, so the attempt is denied and logged in the audit trail.
+
+![Tool Deny](screenshots/Tool_Deny.png)
+
+### 12. Result in Service Desk Table
+
+After approval, the MCP tool executed and the new ticket (`SDT-5005`) is visible in the `service_desk_tickets` MySQL table.
+
+![SD Ticket](screenshots/SD_Ticket.png)
+
+### 13. MySQL Tables
+
+All audit, escalation, and action data is persisted in the `agentic_rag` MySQL database.
 
 **Overall tables:**
 
@@ -334,61 +356,51 @@ All audit and escalation data is persisted in the `agentic_rag` MySQL database.
 
 ### 1. Routing ambiguous user queries
 
-A major challenge in agentic RAG is deciding whether a request should be answered from a private knowledge base, a direct response, or a web search fallback.
+A major challenge in agentic RAG is deciding whether a request should be answered from a private knowledge base, an action/tool call, a direct response, or a web search fallback.
 
-**Solution:**
-The project uses a LangGraph workflow with a router node that classifies the query. This keeps the system grounded and prevents unnecessary web searches for simple conversational inputs.
+**Solution:** A LangGraph router node classifies each message into `kb`, `action`, or `direct`, keeping knowledge questions grounded and preventing unnecessary tool calls or web searches for conversational input.
 
 ### 2. Low-quality or incomplete retrieval
 
 Vector retrieval can surface weak context, especially when the query is vague or under-specified.
 
-**Solution:**
-The app uses evidence grading and query rewriting. If the initial retrieval is weak, the system attempts to rewrite the query and re-run retrieval — with the **authorization filter re-applied identically on every retry**, so rewrites can never widen access.
+**Solution:** Evidence grading plus query rewriting with a self-correction loop — and the **authorization filter is re-applied identically on every retry**, so rewrites can never widen access.
 
 ### 3. Preventing data leakage in a shared vector index
 
 Storing HR policies, payroll data, and security runbooks in one Pinecone index means any unfiltered query could retrieve all of them.
 
-**Solution:**
-Document-level security enforced **at the vector DB level**: every chunk carries a `department` metadata tag, and retrieval passes a Pinecone metadata filter derived from the user's roles. A Finance user literally cannot retrieve HR vectors — regardless of how the question is phrased.
+**Solution:** Document-level security enforced **at the vector DB level**: every chunk carries a `department` metadata tag, and retrieval passes a Pinecone metadata filter derived from the user's roles. A Finance user literally cannot retrieve HR vectors — regardless of how the question is phrased.
 
 ### 4. The web-fallback leak
 
 A subtle but critical issue: when role-filtered retrieval returns nothing relevant, a naive workflow falls back to public web search — which can answer internal-policy questions with generic internet content, contradicting company policy.
 
-**Solution:**
-An access-scope classifier runs before web fallback. Internal-company questions with insufficient authorized evidence are answered with an access-scope redirect instead — never from the web. External topics still reach Tavily.
+**Solution:** An access-scope classifier runs before web fallback. Internal-company questions with insufficient authorized evidence get an access-scope redirect instead — never a web answer. External topics still reach Tavily.
 
 ### 5. Preventing confident hallucinations
 
 An LLM can produce a fluent, plausible answer that the retrieved documents do not actually support.
 
-**Solution:**
-An LLM-as-judge confidence node scores every private-KB answer strictly on evidence support. Answers below the 80% threshold are never shown — they become human-review tickets with the evidence attached.
+**Solution:** An LLM-as-judge confidence node scores every private-KB answer strictly on evidence support. Answers below the 80% threshold are never shown — they become human-review tickets with the evidence attached.
 
 ### 6. Maintaining traceability and explainability
 
 A black-box chatbot is hard to trust in enterprise contexts.
 
-**Solution:**
-The application logs the trace of each decision — routing path, retrieval counts, role-filter scope, evidence grade, confidence score, escalation references — and every query and document access is persisted in MySQL with the requesting user's identity.
+**Solution:** The trace of every decision — routing path, retrieval counts, role-filter scope, evidence grade, confidence score, tool calls, escalation references — plus every query and document access is persisted in MySQL with the requesting user's identity.
 
 ### 7. Securing ingestion and document indexing
 
 Allowing users to upload files to a production knowledge base introduces risk unless controlled.
 
-**Solution:**
-Ingestion requires authentication, and users can only tag documents into departments they belong to. Security Admin can tag any department. Every ingestion is audited.
+**Solution:** Ingestion requires authentication, and users can only tag documents into departments they belong to. Security Admin can tag any department. Every ingestion is audited.
 
----
-
-### 7. Governing what the AI is allowed to DO
+### 8. Governing what the AI is allowed to DO
 
 Answering questions safely is not enough — once an agent can create tickets or reset accounts, a wrong tool call becomes an incident.
 
-**Solution:**
-Tools are exposed behind an MCP server with a strict read/write governance split. Read-only tools execute immediately (still RBAC-scoped); mutating tools can never run on the agent's own authority — they raise a pending action that a department reviewer must approve, and the tool executes only on approval, with the result recorded. Tool-level RBAC additionally restricts who can even request sensitive tools (e.g., account resets are IT/Security only).
+**Solution:** Tools live behind an MCP server with a strict read/write governance split. Read-only tools execute immediately (still RBAC-scoped); mutating tools can never run on the agent's own authority — they raise a pending action that a department reviewer must approve, and the tool executes only on approval with the result recorded. Tool-level RBAC additionally restricts who can even request sensitive tools (account resets are IT/Security only).
 
 ---
 
@@ -401,7 +413,7 @@ This repository demonstrates a working prototype for **secure, accountable, acti
 - Pinecone vector retrieval with document-level security filters
 - Groq-based LLM routing, generation, grading, and confidence judging
 - MCP server (FastMCP) exposing governed enterprise tools over streamable HTTP
-- Read-and-write separation for agent actions: read-only executes, mutations require human signature
+- Read-and-write separation for agent actions: read-only executes, mutations require a human signature
 - Human-in-the-loop review workflow with department-scoped reviewers
 - MySQL persistence for audit trail, escalation tickets, pending actions, and tool data
 - Tavily web fallback restricted to external topics
@@ -425,12 +437,9 @@ This repository demonstrates a working prototype for **secure, accountable, acti
 ### Prerequisites
 
 - Python 3.10+
-- MySQL 8.0 running locally (database is auto-created)
+- MySQL 8.0 running locally (database and tables are auto-created)
 - Docker (optional)
-- API keys for:
-  - Groq
-  - Pinecone
-  - Tavily
+- API keys for: Groq, Pinecone, Tavily
 
 ### 1. Clone the repository
 
@@ -471,7 +480,7 @@ PINECONE_NAMESPACE=company-it-kb
 JWT_SECRET_KEY=change-me-jwt-secret
 CONFIDENCE_THRESHOLD=80
 
-# MySQL (audit trail + escalation tickets; database auto-created)
+# MySQL (audit trail + escalation tickets + tool data; schema auto-created)
 MYSQL_HOST=127.0.0.1
 MYSQL_PORT=3306
 MYSQL_USER=root
@@ -480,11 +489,13 @@ MYSQL_DATABASE=agentic_rag
 APP_ENV=development
 ```
 
-### 5. Ingest sample data
-
-Indexes the sample KB with department security tags (IT / HR / FINANCE / SECURITY):
+### 5. Seed the tool data and ingest the knowledge base
 
 ```bash
+# Creates incidents + service-desk tickets used by the MCP tools
+python app/services/tool_data.py
+
+# Indexes the sample KB with department security tags (IT/HR/FINANCE/SECURITY)
 python ingest_sample_kb.py
 ```
 
@@ -506,36 +517,38 @@ Then open:
 - API docs: `http://127.0.0.1:8080/docs`
 - Sign in with a demo user (see the table in [Feature 1](#feature-1--authorization-aware-rag-rbac--document-level-security))
 
-### 7. Run the app in Docker
+### 7. Run in Docker
 
 ```bash
 docker build -t agentic-rag-app .
-docker run -p 8080:8080 --env-file .env agentic-rag-app
+docker run -p 8080:8080 -p 8001:8001 --env-file .env agentic-rag-app
 ```
 
 ### 8. Try the demo flows
 
-- **Happy path:** as `hr.user`, ask _"How many paid sick days do employees get?"_ → confident answer from the HR doc.
-- **Access blocked:** as `fin.user`, ask the same → the HR document is invisible; internal topics are not answered from the web.
-- **Escalation:** as `hr.user`, ask _"How does the sick leave policy interact with the employee assistance program, and what should their manager be told?"_ → low confidence → ticket created.
-- **Human review:** sign in as `secadmin` (or `hr.user` as department owner) → Escalations panel → inspect evidence → Approve/Reject.
-- **Audit:** as `secadmin`, open the Audit Trail panel — every query, document access, and review decision is there.
-- **Action Agent (read-only):** as `it.user`, ask _"What is the status of ticket SDT-5001?"_ or _"Is the VPN healthy?"_ → the agent calls the MCP tool and summarizes the live result.
-- **Action Agent (approval-gated):** as `it.user`, ask _"Create a service desk ticket to replace a faulty laptop battery, P2"_ → pending action `ACT-...`; approve it in the Escalations panel as `secadmin` → the tool executes via MCP and ticket `SDT-...` appears in MySQL.
-- **Tool RBAC:** as `fin.user`, ask _"Reset test account john.doe"_ → denied with an audit log entry; as `it.user`, the same request goes to approval.
+| Flow                      | Steps                                                                                                                                                                            |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Happy path**            | As `hr.user`, ask _"How many paid sick days do employees get?"_ → confident answer from the HR doc                                                                               |
+| **Access blocked**        | As `fin.user`, ask the same → the HR document is invisible; internal topics are never answered from the web                                                                      |
+| **Escalation**            | As `hr.user`, ask _"How does the sick leave policy interact with the employee assistance program, and what should their manager be told?"_ → low confidence → escalation ticket  |
+| **Human review**          | As `secadmin` (or the department owner) → Escalations panel → inspect evidence → Approve/Reject                                                                                  |
+| **Tool call (read-only)** | As `it.user`, ask _"What is the status of ticket SDT-5001?"_ or _"Is the VPN healthy?"_ → live MCP tool result                                                                   |
+| **Approval-gated action** | As `it.user`, ask _"Create a service desk ticket to replace a faulty laptop battery, P2"_ → pending action `ACT-...` → approve as `secadmin` → ticket `SDT-...` appears in MySQL |
+| **Tool RBAC**             | As `fin.user`, ask _"Reset test account john.doe"_ → denied and logged; the same request as `it.user` goes to approval                                                           |
+| **Audit**                 | As `secadmin`, open the Audit Trail panel — every query, document access, tool execution, and review decision is there                                                           |
 
 ---
 
 ## Future Scope
 
-- **Retrieval evaluation & hallucination detection** — automated RAGAS/DeepEval pipeline measuring answer faithfulness, context precision, and hallucination rates (confidence scores already logged as the dataset)
+- **Retrieval evaluation & hallucination detection** — automated RAGAS/DeepEval pipeline measuring answer faithfulness, context precision, and hallucination rates (confidence scores and review outcomes already logged as the dataset)
 - Real ServiceNow / Jira connectors replacing the simulated MCP tools
 - Re-deliver approved escalation answers back to the requesting user automatically
-- Improve agent memory and session continuity
-- Add support for more enterprise document types
+- Agent memory and session continuity across conversations
+- Support for more enterprise document types (Excel, PowerPoint, HTML)
 - Rate limiting, refresh tokens, and a real user-management endpoint to replace seeded demo users
 - Model fallback strategies for LLM resilience
-- Dashboards for monitoring cost, latency, confidence trends, and escalation rates
+- Dashboards for monitoring cost, latency, confidence trends, escalation rates, and tool-usage analytics
 
 ---
 
